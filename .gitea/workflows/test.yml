@@ -10,14 +10,48 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Create simple artifact
+      - name: Create test artifact tree
         shell: bash
-        run: printf 'Product Server CI upload test\n' > artifact.txt
+        run: |
+          set -euo pipefail
+
+          mkdir -p test-artifacts/dist/assets/js
+          mkdir -p test-artifacts/dist/assets/css
+          mkdir -p test-artifacts/config/environments
+          mkdir -p test-artifacts/docs/guides
+          mkdir -p test-artifacts/data
+          mkdir -p test-artifacts/bin
+
+          printf 'Product Server CI upload test\ncommit=%s\n' "${GITHUB_SHA}" > test-artifacts/README.txt
+          printf '# Release notes\n\nThis directory is generated only for upload testing.\n' > test-artifacts/docs/CHANGELOG.md
+          printf '## Quick start\n\nOpen dist/index.html.\n' > test-artifacts/docs/guides/quick-start.md
+
+          printf '<!doctype html><html><head><link rel="stylesheet" href="assets/css/app.css"></head><body><h1>Product Server</h1><script src="assets/js/app.js"></script></body></html>\n' > test-artifacts/dist/index.html
+          printf ':root { color-scheme: light dark; }\nbody { font-family: sans-serif; }\n' > test-artifacts/dist/assets/css/app.css
+          printf 'console.log("product-server test artifact");\n' > test-artifacts/dist/assets/js/app.js
+          printf '{"name":"product-server-test","version":"1.0.0","features":["upload","extract","workflow"]}\n' > test-artifacts/dist/manifest.json
+
+          printf 'environment: test\nlog_level: debug\n' > test-artifacts/config/application.yml
+          printf 'API_URL=http://example.invalid\nFEATURE_TEST_ARTIFACTS=true\n' > test-artifacts/config/environments/test.env
+          printf '[server]\nport=8080\nmode=test\n' > test-artifacts/config/server.ini
+
+          printf 'id,name,status\n1,alpha,ready\n2,beta,pending\n' > test-artifacts/data/records.csv
+          printf '<testsuite name="artifact"><testcase name="upload"/></testsuite>\n' > test-artifacts/data/report.xml
+          printf '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" rx="12" fill="black"/><text x="32" y="40" fill="white" text-anchor="middle" font-size="24">PS</text></svg>\n' > test-artifacts/data/logo.svg
+          printf '\x00\x01\x02\x03\x7f\x80\xfe\xff' > test-artifacts/bin/sample.bin
+          printf '#!/bin/sh\necho "deployment test"\n' > test-artifacts/bin/deploy.sh
+          chmod +x test-artifacts/bin/deploy.sh
+
+          find test-artifacts -type f -print0 | sort -z | xargs -0 sha256sum > checksums.sha256.tmp
+          mv checksums.sha256.tmp test-artifacts/checksums.sha256
+
+          echo "Generated artifact files:"
+          find test-artifacts -type f -printf '%P (%s bytes)\n' | sort
 
       - name: Upload artifact to Product Server
         uses: https://gitea.s1f.ren/shiran/product-server-action@v1.1
         with:
           url: http://server_a_00059.hostidc.net:8089/
           token: ps_tApTL53hjRhLY4iHPSpcHsdGs02NE3m8fgJ639SLfDU
-          path: artifact.txt
-          name: simple-artifact
+          path: test-artifacts/**
+          name: workflow-file-preview-test

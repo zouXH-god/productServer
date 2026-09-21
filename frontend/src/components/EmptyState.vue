@@ -1,0 +1,1 @@
+<script setup lang="ts">import{Inbox}from'lucide-vue-next';defineProps<{title:string,text?:string}>()</script><template><div class="empty"><Inbox :size="30"/><h3>{{title}}</h3><p v-if="text">{{text}}</p><slot/></div></template>

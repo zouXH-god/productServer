@@ -83,15 +83,64 @@ func (a *App) listConnections(c *gin.Context) {
 	a.db.Where("user_id=?", c.MustGet("userID")).Find(&x)
 	c.JSON(200, x)
 }
-func bindConnection(c *gin.Context, x *SSHConnection) error { return c.ShouldBindJSON(x) }
-func (a *App) createConnection(c *gin.Context) {
-	x := SSHConnection{UserID: c.MustGet("userID").(uint), Port: 22, TimeoutSeconds: 10}
-	if bindConnection(c, &x) != nil || x.Name == "" || x.Host == "" || x.Username == "" {
+
+type connectionPayload struct {
+	Name           string `json:"name"`
+	Host           string `json:"host"`
+	Port           int    `json:"port"`
+	Username       string `json:"username"`
+	CredentialID   uint   `json:"credential_id"`
+	AuthType       string `json:"auth_type"`
+	Password       string `json:"password"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+}
+
+func (a *App) applyConnection(c *gin.Context, x *SSHConnection, creating bool) bool {
+	var in connectionPayload
+	if c.ShouldBindJSON(&in) != nil || strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.Host) == "" || strings.TrimSpace(in.Username) == "" {
 		fail(c, 400, "invalid_request", "name, host and username required")
-		return
+		return false
 	}
-	if !a.ownsCredential(x.CredentialID, x.UserID) {
-		fail(c, 400, "invalid_credential", "credential not found")
+	if in.AuthType == "" {
+		in.AuthType = "key"
+	}
+	if in.AuthType != "key" && in.AuthType != "password" {
+		fail(c, 400, "invalid_auth_type", "auth_type must be key or password")
+		return false
+	}
+	if in.Port <= 0 {
+		in.Port = 22
+	}
+	if in.TimeoutSeconds <= 0 {
+		in.TimeoutSeconds = 10
+	}
+	x.Name, x.Host, x.Port, x.Username, x.TimeoutSeconds, x.AuthType = strings.TrimSpace(in.Name), strings.TrimSpace(in.Host), in.Port, strings.TrimSpace(in.Username), in.TimeoutSeconds, in.AuthType
+	if in.AuthType == "key" {
+		if !a.ownsCredential(in.CredentialID, x.UserID) {
+			fail(c, 400, "invalid_credential", "credential not found")
+			return false
+		}
+		x.CredentialID, x.PasswordEncrypted = in.CredentialID, ""
+		return true
+	}
+	if creating && in.Password == "" {
+		fail(c, 400, "invalid_request", "password is required for password authentication")
+		return false
+	}
+	if in.Password != "" {
+		enc, err := encryptSecret(a.cfg.SecretEncryptionKey, in.Password)
+		if err != nil {
+			fail(c, 400, "encryption_unavailable", err.Error())
+			return false
+		}
+		x.PasswordEncrypted = enc
+	}
+	x.CredentialID = 0
+	return true
+}
+func (a *App) createConnection(c *gin.Context) {
+	x := SSHConnection{UserID: c.MustGet("userID").(uint), Port: 22, TimeoutSeconds: 10, AuthType: "key"}
+	if !a.applyConnection(c, &x, true) {
 		return
 	}
 	a.db.Create(&x)
@@ -104,14 +153,7 @@ func (a *App) updateConnection(c *gin.Context) {
 		fail(c, 404, "not_found", "connection not found")
 		return
 	}
-	uid := x.UserID
-	if bindConnection(c, &x) != nil {
-		return
-	}
-	x.ID = uint(id)
-	x.UserID = uid
-	if !a.ownsCredential(x.CredentialID, uid) {
-		fail(c, 400, "invalid_credential", "credential not found")
+	if !a.applyConnection(c, &x, false) {
 		return
 	}
 	a.db.Save(&x)
@@ -142,32 +184,45 @@ func (a *App) sshClient(id, uid uint) (*ssh.Client, error) {
 	if e := a.db.Where("id=? AND user_id=?", id, uid).First(&conn).Error; e != nil {
 		return nil, e
 	}
-	var cred SSHCredential
-	if e := a.db.First(&cred, conn.CredentialID).Error; e != nil {
-		return nil, e
-	}
-	key, e := decryptSecret(a.cfg.SecretEncryptionKey, cred.PrivateKeyEncrypted)
-	if e != nil {
-		return nil, e
-	}
-	pass, e := decryptSecret(a.cfg.SecretEncryptionKey, cred.PassphraseEncrypted)
-	if e != nil {
-		return nil, e
-	}
-	var signer ssh.Signer
-	if pass != "" {
-		signer, e = ssh.ParsePrivateKeyWithPassphrase([]byte(key), []byte(pass))
+	var auth ssh.AuthMethod
+	if conn.AuthType == "password" {
+		password, e := decryptSecret(a.cfg.SecretEncryptionKey, conn.PasswordEncrypted)
+		if e != nil {
+			return nil, e
+		}
+		if password == "" {
+			return nil, fmt.Errorf("password authentication is not configured")
+		}
+		auth = ssh.Password(password)
 	} else {
-		signer, e = ssh.ParsePrivateKey([]byte(key))
-	}
-	if e != nil {
-		return nil, e
+		var cred SSHCredential
+		if e := a.db.First(&cred, conn.CredentialID).Error; e != nil {
+			return nil, e
+		}
+		key, e := decryptSecret(a.cfg.SecretEncryptionKey, cred.PrivateKeyEncrypted)
+		if e != nil {
+			return nil, e
+		}
+		pass, e := decryptSecret(a.cfg.SecretEncryptionKey, cred.PassphraseEncrypted)
+		if e != nil {
+			return nil, e
+		}
+		var signer ssh.Signer
+		if pass != "" {
+			signer, e = ssh.ParsePrivateKeyWithPassphrase([]byte(key), []byte(pass))
+		} else {
+			signer, e = ssh.ParsePrivateKey([]byte(key))
+		}
+		if e != nil {
+			return nil, e
+		}
+		auth = ssh.PublicKeys(signer)
 	}
 	timeout := time.Duration(conn.TimeoutSeconds) * time.Second
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	return ssh.Dial("tcp", net.JoinHostPort(conn.Host, strconv.Itoa(conn.Port)), &ssh.ClientConfig{User: conn.Username, Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: timeout})
+	return ssh.Dial("tcp", net.JoinHostPort(conn.Host, strconv.Itoa(conn.Port)), &ssh.ClientConfig{User: conn.Username, Auth: []ssh.AuthMethod{auth}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: timeout})
 }
 
 type workflowPayload struct {

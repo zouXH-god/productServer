@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -78,6 +79,31 @@ func createProjectAndToken(t *testing.T, a *App, jwt string) (uint, string) {
 	_ = json.Unmarshal(w.Body.Bytes(), &result)
 	return result.ID, result.Token
 }
+
+func TestSSHPasswordConnectionIsEncrypted(t *testing.T) {
+	a, _ := testApp(t)
+	a.cfg.SecretEncryptionKey = "12345678901234567890123456789012"
+	jwt := loginToken(t, a)
+	body := `{"name":"password-server","host":"example.internal","port":22,"username":"deploy","auth_type":"password","password":"very-secret","timeout_seconds":10}`
+	w := request(t, a, "POST", "/api/ssh-connections", bytes.NewBufferString(body), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + jwt})
+	if w.Code != 201 {
+		t.Fatalf("create password connection: %d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "very-secret") {
+		t.Fatal("password leaked in API response")
+	}
+	var connection SSHConnection
+	if err := a.db.Where("name = ?", "password-server").First(&connection).Error; err != nil {
+		t.Fatal(err)
+	}
+	if connection.AuthType != "password" || connection.PasswordEncrypted == "" || connection.PasswordEncrypted == "very-secret" {
+		t.Fatalf("password was not encrypted: %#v", connection)
+	}
+	plain, err := decryptSecret(a.cfg.SecretEncryptionKey, connection.PasswordEncrypted)
+	if err != nil || plain != "very-secret" {
+		t.Fatalf("stored password cannot be decrypted: %q %v", plain, err)
+	}
+}
 func uploadBody(t *testing.T, version string, files map[string]string) (*bytes.Buffer, string) {
 	t.Helper()
 	b := new(bytes.Buffer)
@@ -89,6 +115,75 @@ func uploadBody(t *testing.T, version string, files map[string]string) (*bytes.B
 	}
 	_ = m.Close()
 	return b, m.FormDataContentType()
+}
+
+func zipData(t *testing.T, files map[string]string) string {
+	t.Helper()
+	var data bytes.Buffer
+	w := zip.NewWriter(&data)
+	for name, content := range files {
+		entry, err := w.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = entry.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return data.String()
+}
+
+func TestUploadAutomaticallyExtractsZIPAndKeepsArchive(t *testing.T) {
+	a, cfg := testApp(t)
+	jwt := loginToken(t, a)
+	pid, token := createProjectAndToken(t, a, jwt)
+	archive := zipData(t, map[string]string{"dist/index.html": "hello", "checksums.txt": "abc123"})
+	body, contentType := uploadBody(t, "zip-release", map[string]string{"artifact.zip": archive})
+	w := request(t, a, "POST", "/api/upload", body, map[string]string{"Content-Type": contentType, "Authorization": "Bearer " + token})
+	if w.Code != 201 {
+		t.Fatalf("upload zip: %d %s", w.Code, w.Body.String())
+	}
+	var release Release
+	if err := json.Unmarshal(w.Body.Bytes(), &release); err != nil {
+		t.Fatal(err)
+	}
+	if len(release.Files) != 3 {
+		t.Fatalf("expected archive and 2 extracted files, got %d", len(release.Files))
+	}
+	kinds := map[string]string{}
+	for _, file := range release.Files {
+		kinds[file.OriginalName] = file.Kind
+		if _, err := os.Stat(filepath.Join(cfg.StorageDir, itoa(pid), itoa(release.ID), file.StoredName)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if kinds["artifact.zip"] != "uploaded" || kinds["dist/index.html"] != "extracted" || kinds["checksums.txt"] != "extracted" {
+		t.Fatalf("unexpected artifact list: %#v", kinds)
+	}
+	body, contentType = uploadBody(t, "zip-release", map[string]string{"artifact.zip": archive})
+	w = request(t, a, "POST", "/api/upload", body, map[string]string{"Content-Type": contentType, "Authorization": "Bearer " + token})
+	if w.Code != 200 {
+		t.Fatalf("idempotent zip upload: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestUploadRejectsUnsafeZIPEntry(t *testing.T) {
+	a, _ := testApp(t)
+	jwt := loginToken(t, a)
+	_, token := createProjectAndToken(t, a, jwt)
+	body, contentType := uploadBody(t, "unsafe-zip", map[string]string{"artifact.zip": zipData(t, map[string]string{"../escape.txt": "bad"})})
+	w := request(t, a, "POST", "/api/upload", body, map[string]string{"Content-Type": contentType, "Authorization": "Bearer " + token})
+	if w.Code != 400 {
+		t.Fatalf("unsafe zip status: %d %s", w.Code, w.Body.String())
+	}
+	var count int64
+	a.db.Model(&Release{}).Count(&count)
+	if count != 0 {
+		t.Fatal("unsafe archive created a release")
+	}
 }
 
 func TestBootstrapOnlyOnce(t *testing.T) {

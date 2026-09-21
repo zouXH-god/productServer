@@ -47,16 +47,18 @@ type SSHCredential struct {
 	CreatedAt           time.Time `json:"created_at"`
 }
 type SSHConnection struct {
-	ID             uint      `json:"id" gorm:"primaryKey"`
-	UserID         uint      `json:"-" gorm:"index;not null"`
-	CredentialID   uint      `json:"credential_id"`
-	Name           string    `json:"name"`
-	Host           string    `json:"host"`
-	Port           int       `json:"port"`
-	Username       string    `json:"username"`
-	TimeoutSeconds int       `json:"timeout_seconds"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID                uint      `json:"id" gorm:"primaryKey"`
+	UserID            uint      `json:"-" gorm:"index;not null"`
+	CredentialID      uint      `json:"credential_id"`
+	AuthType          string    `json:"auth_type" gorm:"size:16;not null;default:key"`
+	PasswordEncrypted string    `json:"-" gorm:"type:text"`
+	Name              string    `json:"name"`
+	Host              string    `json:"host"`
+	Port              int       `json:"port"`
+	Username          string    `json:"username"`
+	TimeoutSeconds    int       `json:"timeout_seconds"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 type Workflow struct {
 	ID          uint      `json:"id" gorm:"primaryKey"`
@@ -125,5 +127,7 @@ type ArtifactFile struct {
 	Size         int64     `json:"size"`
 	SHA256       string    `json:"sha256" gorm:"size:64"`
 	MIMEType     string    `json:"mime_type"`
+	Kind         string    `json:"kind" gorm:"size:16;not null;default:uploaded"`
+	ArchiveName  string    `json:"archive_name,omitempty" gorm:"size:255"`
 	CreatedAt    time.Time `json:"created_at"`
 }

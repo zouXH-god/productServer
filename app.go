@@ -71,6 +71,8 @@ func (a *App) routes() {
 	r.GET("/api/download", a.tokenDownload)
 	api := r.Group("/api", a.jwtAuth())
 	api.GET("/auth/me", a.me)
+	api.GET("/dashboard", a.dashboard)
+	api.GET("/runs", a.allRuns)
 	api.GET("/projects", a.listProjects)
 	api.POST("/projects", a.createProject)
 	api.GET("/projects/:id", a.getProject)
@@ -546,7 +548,16 @@ func (a *App) upload(c *gin.Context) {
 			fail(c, 413, "file_too_large", "unable to save "+name)
 			return
 		}
-		files = append(files, ArtifactFile{OriginalName: name, StoredName: stored, Size: n, SHA256: hex.EncodeToString(hash.Sum(nil)), MIMEType: h.Header.Get("Content-Type")})
+		files = append(files, ArtifactFile{OriginalName: name, StoredName: stored, Size: n, SHA256: hex.EncodeToString(hash.Sum(nil)), MIMEType: h.Header.Get("Content-Type"), Kind: "uploaded"})
+	}
+	files, total, err = expandUploadedZIPs(tmp, files, total, a.cfg.MaxFileBytes, a.cfg.MaxBatchBytes)
+	if err != nil {
+		if errors.Is(err, errExtractTooLarge) {
+			fail(c, 413, "extracted_files_too_large", err.Error())
+		} else {
+			fail(c, 400, "invalid_archive", err.Error())
+		}
+		return
 	}
 	var existing Release
 	if err := a.db.Preload("Files").Where("project_id = ? AND version = ?", projectID, version).First(&existing).Error; err == nil {
@@ -611,6 +622,8 @@ func (a *App) upload(c *gin.Context) {
 	c.JSON(201, release)
 }
 func artifactFilesEqual(existing, incoming []ArtifactFile) bool {
+	existing = uploadedArtifactFiles(existing)
+	incoming = uploadedArtifactFiles(incoming)
 	if len(existing) != len(incoming) {
 		return false
 	}
@@ -625,6 +638,16 @@ func artifactFilesEqual(existing, incoming []ArtifactFile) bool {
 		}
 	}
 	return true
+}
+
+func uploadedArtifactFiles(files []ArtifactFile) []ArtifactFile {
+	result := make([]ArtifactFile, 0, len(files))
+	for _, file := range files {
+		if file.Kind == "" || file.Kind == "uploaded" {
+			result = append(result, file)
+		}
+	}
+	return result
 }
 func validFilename(name string) bool {
 	return name != "" && name != "." && name != ".." && filepath.Base(name) == name && !strings.ContainsAny(name, "/\\\x00")

@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"strings"
 )
 
 func secretKey(raw string) ([]byte, error) {
@@ -66,5 +65,5 @@ func decryptSecret(master, value string) (string, error) {
 		return "", fmt.Errorf("invalid encrypted secret")
 	}
 	plain, e := g.Open(nil, data[:g.NonceSize()], data[g.NonceSize():], nil)
-	return strings.TrimSpace(string(plain)), e
+	return string(plain), e
 }

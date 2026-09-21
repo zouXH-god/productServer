@@ -1,0 +1,1 @@
+<script setup lang="ts">defineProps<{status:string,label?:string}>();const labels:Record<string,string>={queued:'等待中',running:'运行中',succeeded:'成功',success:'成功',failed:'失败',cancelled:'已取消',pending:'待执行',disabled:'已停用'};</script><template><span class="status-badge" :class="`status-${status}`">{{label||labels[status]||status}}</span></template>

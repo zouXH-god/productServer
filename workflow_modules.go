@@ -18,6 +18,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -52,6 +54,54 @@ func render(s string, p Project, r Release, input, work string) string {
 	}
 	return s
 }
+
+type matchedFile struct {
+	Path string
+	Name string
+}
+
+func matchWorkspaceFiles(input, work, expression string) ([]matchedFile, error) {
+	re, err := regexp.Compile(expression)
+	if err != nil {
+		return nil, fmt.Errorf("invalid file regular expression: %w", err)
+	}
+	result := []matchedFile{}
+	for _, root := range []string{input, work} {
+		err = filepath.Walk(root, func(current string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if info.IsDir() {
+				return nil
+			}
+			rel, relErr := filepath.Rel(root, current)
+			if relErr != nil {
+				return relErr
+			}
+			rel = filepath.ToSlash(rel)
+			if re.MatchString(rel) {
+				result = append(result, matchedFile{Path: current, Name: rel})
+			}
+			return nil
+		})
+		if err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	return result, nil
+}
+
+func oneMatchedFile(input, work string, c map[string]any) (string, error) {
+	matches, err := matchWorkspaceFiles(input, work, str(c, "file_pattern"))
+	if err != nil {
+		return "", err
+	}
+	if len(matches) != 1 {
+		return "", fmt.Errorf("file regular expression must match exactly one file, matched %d", len(matches))
+	}
+	return matches[0].Path, nil
+}
 func executeModule(ctx context.Context, db *gorm.DB, cfg Config, run WorkflowRun, p Project, r Release, n WorkflowNode, input, work string, log *runLogger) error {
 	switch n.Type {
 	case "archive":
@@ -74,11 +124,26 @@ func archiveModule(c map[string]any, input, work string) error {
 	if pattern == "" {
 		pattern = "*"
 	}
-	matches, _ := filepath.Glob(filepath.Join(input, pattern))
-	if len(matches) == 0 {
-		if x, e := safePath(work, pattern); e == nil {
-			matches, _ = filepath.Glob(x)
+	matches := []matchedFile{}
+	if expression := str(c, "file_pattern"); expression != "" {
+		var e error
+		matches, e = matchWorkspaceFiles(input, work, expression)
+		if e != nil {
+			return e
 		}
+	} else {
+		legacy, _ := filepath.Glob(filepath.Join(input, pattern))
+		if len(legacy) == 0 {
+			if x, e := safePath(work, pattern); e == nil {
+				legacy, _ = filepath.Glob(x)
+			}
+		}
+		for _, x := range legacy {
+			matches = append(matches, matchedFile{Path: x, Name: filepath.Base(x)})
+		}
+	}
+	if len(matches) == 0 {
+		return fmt.Errorf("file selection matched no files")
 	}
 	out, e := safePath(work, str(c, "output"))
 	if e != nil {
@@ -96,13 +161,14 @@ func archiveModule(c map[string]any, input, work string) error {
 		}
 		gz := gzip.NewWriter(f)
 		tw := tar.NewWriter(gz)
-		for _, x := range matches {
+		for _, match := range matches {
+			x := match.Path
 			info, _ := os.Stat(x)
 			if info.IsDir() {
 				continue
 			}
 			h, _ := tar.FileInfoHeader(info, "")
-			h.Name = filepath.Base(x)
+			h.Name = match.Name
 			tw.WriteHeader(h)
 			in, _ := os.Open(x)
 			io.Copy(tw, in)
@@ -117,13 +183,14 @@ func archiveModule(c map[string]any, input, work string) error {
 		return e
 	}
 	zw := zip.NewWriter(f)
-	for _, x := range matches {
+	for _, match := range matches {
+		x := match.Path
 		info, _ := os.Stat(x)
 		if info.IsDir() {
 			continue
 		}
 		h, _ := zip.FileInfoHeader(info)
-		h.Name = filepath.Base(x)
+		h.Name = match.Name
 		h.SetModTime(time.Unix(0, 0))
 		w, _ := zw.CreateHeader(h)
 		in, _ := os.Open(x)
@@ -134,7 +201,13 @@ func archiveModule(c map[string]any, input, work string) error {
 	return f.Close()
 }
 func extractModule(c map[string]any, input, work string) error {
-	src, e := safePath(input, str(c, "source"))
+	var src string
+	var e error
+	if str(c, "file_pattern") != "" {
+		src, e = oneMatchedFile(input, work, c)
+	} else {
+		src, e = safePath(input, str(c, "source"))
+	}
 	if e != nil {
 		return e
 	}
@@ -225,7 +298,13 @@ func extractModule(c map[string]any, input, work string) error {
 	return nil
 }
 func checksumModule(c map[string]any, input, work string) error {
-	file, e := safePath(input, str(c, "file"))
+	var file string
+	var e error
+	if str(c, "file_pattern") != "" {
+		file, e = oneMatchedFile(input, work, c)
+	} else {
+		file, e = safePath(input, str(c, "file"))
+	}
 	if e != nil {
 		return e
 	}
@@ -371,6 +450,27 @@ func sftpModule(ctx context.Context, db *gorm.DB, cfg Config, run WorkflowRun, c
 		return e
 	}
 	defer sf.Close()
+	if expression := str(c, "file_pattern"); expression != "" {
+		matches, err := matchWorkspaceFiles(input, work, expression)
+		if err != nil {
+			return err
+		}
+		if len(matches) == 0 {
+			return fmt.Errorf("file selection matched no files")
+		}
+		remote := str(c, "destination")
+		for _, match := range matches {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			if err = sftpFile(sf, match.Path, pathJoinRemote(remote, match.Name)); err != nil {
+				return fmt.Errorf("upload %s: %w", match.Name, err)
+			}
+		}
+		return nil
+	}
 	local, e := safePath(input, str(c, "source"))
 	if e != nil {
 		return e

@@ -338,6 +338,9 @@ func copyFile(src, dst string) error {
 		return e
 	}
 	defer in.Close()
+	if e = os.MkdirAll(filepath.Dir(dst), 0755); e != nil {
+		return e
+	}
 	out, e := os.Create(dst)
 	if e != nil {
 		return e

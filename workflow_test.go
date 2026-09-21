@@ -60,3 +60,24 @@ func TestArchiveAndSafeExtract(t *testing.T) {
 		t.Fatal("workspace escape accepted")
 	}
 }
+
+func TestWorkspaceFileRegularExpression(t *testing.T) {
+	root := t.TempDir()
+	input := filepath.Join(root, "input")
+	work := filepath.Join(root, "work")
+	os.MkdirAll(filepath.Join(input, "dist", "assets"), 0755)
+	os.MkdirAll(work, 0755)
+	os.WriteFile(filepath.Join(input, "dist", "index.html"), []byte("html"), 0644)
+	os.WriteFile(filepath.Join(input, "dist", "assets", "app.js"), []byte("js"), 0644)
+	os.WriteFile(filepath.Join(input, "README.txt"), []byte("text"), 0644)
+	matches, err := matchWorkspaceFiles(input, work, `^dist/.*\.(html|js)$`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 2 || matches[0].Name != "dist/assets/app.js" || matches[1].Name != "dist/index.html" {
+		t.Fatalf("unexpected matches: %#v", matches)
+	}
+	if _, err = matchWorkspaceFiles(input, work, `[`); err == nil {
+		t.Fatal("invalid regular expression accepted")
+	}
+}
