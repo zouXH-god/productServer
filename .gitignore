@@ -1,0 +1,13 @@
+*.db
+*.db-shm
+*.db-wal
+data/
+bin/
+frontend/node_modules/
+frontend/.npm-cache/
+uploader/node_modules/
+uploader/.npm-cache/
+uploader/
+frontend/dist/*
+!frontend/dist/index.html
+.env

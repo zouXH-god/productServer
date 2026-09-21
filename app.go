@@ -1,0 +1,611 @@
+package main
+
+import (
+	"crypto/rand"
+	"crypto/sha256"
+	"embed"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
+)
+
+//go:embed frontend/dist
+var frontendFS embed.FS
+
+type App struct {
+	db           *gorm.DB
+	cfg          Config
+	router       *gin.Engine
+	releaseHooks []func(Release)
+}
+type apiError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func fail(c *gin.Context, status int, code, message string) {
+	c.AbortWithStatusJSON(status, gin.H{"error": apiError{code, message}})
+}
+func newApp(db *gorm.DB, cfg Config) (*App, error) {
+	if err := os.MkdirAll(cfg.StorageDir, 0755); err != nil {
+		return nil, err
+	}
+	a := &App{db: db, cfg: cfg, router: gin.New()}
+	a.router.Use(gin.Logger(), gin.Recovery())
+	a.routes()
+	return a, nil
+}
+func (a *App) routes() {
+	r := a.router
+	r.GET("/healthz", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
+	r.GET("/readyz", a.ready)
+	r.POST("/api/auth/login", a.login)
+	r.POST("/api/upload", a.tokenAuth(), a.upload)
+	r.GET("/api/download", a.tokenDownload)
+	api := r.Group("/api", a.jwtAuth())
+	api.GET("/auth/me", a.me)
+	api.GET("/projects", a.listProjects)
+	api.POST("/projects", a.createProject)
+	api.GET("/projects/:id", a.getProject)
+	api.DELETE("/projects/:id", a.deleteProject)
+	api.GET("/projects/:id/tokens", a.listTokens)
+	api.POST("/projects/:id/tokens", a.createToken)
+	api.DELETE("/projects/:id/tokens/:tokenId", a.deleteToken)
+	api.GET("/projects/:id/token", a.getToken)
+	api.POST("/projects/:id/token/rotate", a.rotateToken)
+	api.GET("/projects/:id/releases", a.listReleases)
+	api.GET("/projects/:id/releases/:releaseId", a.getRelease)
+	api.GET("/projects/:id/releases/:releaseId/files/:fileId/download", a.download)
+	assets, _ := fs.Sub(frontendFS, "frontend/dist")
+	r.NoRoute(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			fail(c, 404, "not_found", "route not found")
+			return
+		}
+		p := strings.TrimPrefix(filepath.ToSlash(c.Request.URL.Path), "/")
+		if p != "" {
+			if f, err := assets.Open(p); err == nil {
+				_ = f.Close()
+				c.FileFromFS(p, http.FS(assets))
+				return
+			}
+		}
+		data, err := fs.ReadFile(assets, "index.html")
+		if err != nil {
+			fail(c, 404, "frontend_unavailable", "frontend is not built")
+			return
+		}
+		c.Data(200, "text/html; charset=utf-8", data)
+	})
+}
+func parseID(c *gin.Context, key string) (uint, bool) {
+	n, err := strconv.ParseUint(c.Param(key), 10, 64)
+	if err != nil || n == 0 {
+		fail(c, 400, "invalid_id", "invalid identifier")
+		return 0, false
+	}
+	return uint(n), true
+}
+func (a *App) ready(c *gin.Context) {
+	sqlDB, err := a.db.DB()
+	if err != nil || sqlDB.Ping() != nil {
+		fail(c, 503, "database_unavailable", "database unavailable")
+		return
+	}
+	f, err := os.CreateTemp(a.cfg.StorageDir, ".ready-")
+	if err != nil {
+		fail(c, 503, "storage_unavailable", "storage unavailable")
+		return
+	}
+	name := f.Name()
+	_ = f.Close()
+	_ = os.Remove(name)
+	c.JSON(200, gin.H{"status": "ready"})
+}
+func (a *App) login(c *gin.Context) {
+	var in struct {
+		Username string `json:"username" binding:"required"`
+		Password string `json:"password" binding:"required"`
+	}
+	if c.ShouldBindJSON(&in) != nil {
+		fail(c, 400, "invalid_request", "username and password are required")
+		return
+	}
+	var u User
+	if a.db.Where("username = ?", in.Username).First(&u).Error != nil || bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(in.Password)) != nil {
+		fail(c, 401, "invalid_credentials", "invalid username or password")
+		return
+	}
+	now := time.Now()
+	claims := jwt.MapClaims{"sub": strconv.FormatUint(uint64(u.ID), 10), "iat": now.Unix(), "exp": now.Add(a.cfg.JWTExpiry).Unix()}
+	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, _ := t.SignedString([]byte(a.cfg.JWTSecret))
+	c.JSON(200, gin.H{"token": signed, "expires_at": now.Add(a.cfg.JWTExpiry)})
+}
+func (a *App) jwtAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		raw := bearer(c)
+		token, err := jwt.Parse(raw, func(t *jwt.Token) (any, error) {
+			if t.Method != jwt.SigningMethodHS256 {
+				return nil, errors.New("invalid signing method")
+			}
+			return []byte(a.cfg.JWTSecret), nil
+		})
+		if err != nil || !token.Valid {
+			fail(c, 401, "unauthorized", "valid JWT required")
+			return
+		}
+		sub, err := token.Claims.GetSubject()
+		if err != nil {
+			fail(c, 401, "unauthorized", "invalid JWT subject")
+			return
+		}
+		id, err := strconv.ParseUint(sub, 10, 64)
+		if err != nil {
+			fail(c, 401, "unauthorized", "invalid JWT subject")
+			return
+		}
+		c.Set("userID", uint(id))
+		c.Next()
+	}
+}
+func bearer(c *gin.Context) string {
+	h := c.GetHeader("Authorization")
+	if strings.HasPrefix(h, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+	}
+	return ""
+}
+func (a *App) tokenAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		raw := bearer(c)
+		t, ok := a.findProjectToken(raw)
+		if !ok {
+			fail(c, 401, "invalid_project_token", "valid project token required")
+			return
+		}
+		now := time.Now()
+		_ = a.db.Model(&t).Update("last_used_at", now).Error
+		c.Set("projectID", t.ProjectID)
+		c.Next()
+	}
+}
+func (a *App) findProjectToken(raw string) (ProjectToken, bool) {
+	if raw == "" {
+		return ProjectToken{}, false
+	}
+	sum := sha256.Sum256([]byte(raw))
+	var token ProjectToken
+	if a.db.Where("token_hash = ?", hex.EncodeToString(sum[:])).First(&token).Error != nil {
+		return token, false
+	}
+	return token, true
+}
+func (a *App) me(c *gin.Context) {
+	var u User
+	if a.db.First(&u, c.MustGet("userID")).Error != nil {
+		fail(c, 404, "not_found", "user not found")
+		return
+	}
+	c.JSON(200, u)
+}
+func (a *App) listProjects(c *gin.Context) {
+	var p []Project
+	a.db.Where("user_id = ?", c.MustGet("userID")).Order("id desc").Find(&p)
+	c.JSON(200, p)
+}
+func (a *App) createProject(c *gin.Context) {
+	var in struct {
+		Name string `json:"name" binding:"required"`
+	}
+	if c.ShouldBindJSON(&in) != nil || strings.TrimSpace(in.Name) == "" {
+		fail(c, 400, "invalid_request", "name is required")
+		return
+	}
+	p := Project{UserID: c.MustGet("userID").(uint), Name: strings.TrimSpace(in.Name)}
+	var raw string
+	err := a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&p).Error; err != nil {
+			return err
+		}
+		_, generated, err := generateProjectToken(tx, p.ID)
+		raw = generated
+		return err
+	})
+	if err != nil {
+		fail(c, 409, "project_exists", "project name already exists")
+		return
+	}
+	c.JSON(201, gin.H{"id": p.ID, "name": p.Name, "created_at": p.CreatedAt, "token": raw})
+}
+func (a *App) ownedProject(c *gin.Context, id uint) (Project, bool) {
+	var p Project
+	if a.db.Where("id = ? AND user_id = ?", id, c.MustGet("userID")).First(&p).Error != nil {
+		fail(c, 404, "not_found", "project not found")
+		return p, false
+	}
+	return p, true
+}
+func (a *App) getProject(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	p, ok := a.ownedProject(c, id)
+	if ok {
+		c.JSON(200, p)
+	}
+}
+func (a *App) deleteProject(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	_, ok = a.ownedProject(c, id)
+	if !ok {
+		return
+	}
+	root := filepath.Join(a.cfg.StorageDir, strconv.FormatUint(uint64(id), 10))
+	trash := root + fmt.Sprintf(".deleting-%d", time.Now().UnixNano())
+	moved := false
+	if _, err := os.Stat(root); err == nil {
+		if err = os.Rename(root, trash); err != nil {
+			fail(c, 500, "storage_error", "unable to prepare artifact deletion")
+			return
+		}
+		moved = true
+	}
+	err := a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("project_id = ?", id).Delete(&ProjectToken{}).Error; err != nil {
+			return err
+		}
+		var releases []Release
+		if err := tx.Where("project_id = ?", id).Find(&releases).Error; err != nil {
+			return err
+		}
+		for _, r := range releases {
+			if err := tx.Where("release_id = ?", r.ID).Delete(&ArtifactFile{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("project_id = ?", id).Delete(&Release{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Delete(&Project{}, id).Error; err != nil {
+			return err
+		}
+		if moved {
+			if err := os.RemoveAll(trash); err != nil {
+				return fmt.Errorf("remove artifact files: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		if moved {
+			_ = os.Rename(trash, root)
+		}
+		fail(c, 500, "database_error", "unable to delete project")
+		return
+	}
+	c.Status(204)
+}
+func (a *App) listTokens(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	if _, ok = a.ownedProject(c, id); !ok {
+		return
+	}
+	var items []ProjectToken
+	a.db.Where("project_id = ?", id).Order("id desc").Find(&items)
+	c.JSON(200, items)
+}
+func (a *App) createToken(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	if _, ok = a.ownedProject(c, id); !ok {
+		return
+	}
+	var t ProjectToken
+	var raw string
+	err := a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("project_id = ?", id).Delete(&ProjectToken{}).Error; err != nil {
+			return err
+		}
+		var err error
+		t, raw, err = generateProjectToken(tx, id)
+		return err
+	})
+	if err != nil {
+		fail(c, 500, "database_error", "unable to create token")
+		return
+	}
+	c.JSON(201, gin.H{"id": t.ID, "name": t.Name, "prefix": t.Prefix, "created_at": t.CreatedAt, "token": raw})
+}
+func generateProjectToken(db *gorm.DB, projectID uint) (ProjectToken, string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return ProjectToken{}, "", err
+	}
+	raw := "ps_" + base64.RawURLEncoding.EncodeToString(b)
+	sum := sha256.Sum256([]byte(raw))
+	t := ProjectToken{ProjectID: projectID, Name: "project", Prefix: raw[:11], TokenHash: hex.EncodeToString(sum[:])}
+	return t, raw, db.Create(&t).Error
+}
+func (a *App) getToken(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	if _, ok = a.ownedProject(c, id); !ok {
+		return
+	}
+	var token ProjectToken
+	if a.db.Where("project_id = ?", id).First(&token).Error != nil {
+		fail(c, 404, "not_found", "project token not found")
+		return
+	}
+	c.JSON(200, token)
+}
+func (a *App) rotateToken(c *gin.Context) { a.createToken(c) }
+func (a *App) deleteToken(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	if _, ok = a.ownedProject(c, id); !ok {
+		return
+	}
+	tid, ok := parseID(c, "tokenId")
+	if !ok {
+		return
+	}
+	r := a.db.Where("id = ? AND project_id = ?", tid, id).Delete(&ProjectToken{})
+	if r.RowsAffected == 0 {
+		fail(c, 404, "not_found", "token not found")
+		return
+	}
+	c.Status(204)
+}
+func (a *App) listReleases(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	if _, ok = a.ownedProject(c, id); !ok {
+		return
+	}
+	var items []Release
+	a.db.Where("project_id = ?", id).Order("id desc").Find(&items)
+	c.JSON(200, items)
+}
+func (a *App) getRelease(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	if _, ok = a.ownedProject(c, id); !ok {
+		return
+	}
+	rid, ok := parseID(c, "releaseId")
+	if !ok {
+		return
+	}
+	var r Release
+	if a.db.Preload("Files").Where("id = ? AND project_id = ?", rid, id).First(&r).Error != nil {
+		fail(c, 404, "not_found", "release not found")
+		return
+	}
+	c.JSON(200, r)
+}
+func (a *App) download(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	if _, ok = a.ownedProject(c, id); !ok {
+		return
+	}
+	rid, ok := parseID(c, "releaseId")
+	if !ok {
+		return
+	}
+	fid, ok := parseID(c, "fileId")
+	if !ok {
+		return
+	}
+	var f ArtifactFile
+	if a.db.Joins("JOIN releases ON releases.id = artifact_files.release_id").Where("artifact_files.id = ? AND artifact_files.release_id = ? AND releases.project_id = ?", fid, rid, id).First(&f).Error != nil {
+		fail(c, 404, "not_found", "file not found")
+		return
+	}
+	a.serveArtifact(c, id, rid, f)
+}
+func (a *App) tokenDownload(c *gin.Context) {
+	raw, version, filename := c.Query("token"), strings.TrimSpace(c.Query("version")), c.Query("file")
+	if raw == "" || version == "" || filename == "" {
+		fail(c, 400, "invalid_request", "token, version and file are required")
+		return
+	}
+	token, ok := a.findProjectToken(raw)
+	if !ok {
+		fail(c, 401, "invalid_project_token", "valid project token required")
+		return
+	}
+	var release Release
+	if a.db.Where("project_id = ? AND version = ?", token.ProjectID, version).First(&release).Error != nil {
+		fail(c, 404, "not_found", "release not found")
+		return
+	}
+	var file ArtifactFile
+	if a.db.Where("release_id = ? AND original_name = ?", release.ID, filename).First(&file).Error != nil {
+		fail(c, 404, "not_found", "file not found")
+		return
+	}
+	now := time.Now()
+	_ = a.db.Model(&token).Update("last_used_at", now).Error
+	a.serveArtifact(c, token.ProjectID, release.ID, file)
+}
+func (a *App) serveArtifact(c *gin.Context, projectID, releaseID uint, f ArtifactFile) {
+	path := filepath.Join(a.cfg.StorageDir, strconv.FormatUint(uint64(projectID), 10), strconv.FormatUint(uint64(releaseID), 10), f.StoredName)
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename*=UTF-8''%s", url.PathEscape(f.OriginalName)))
+	c.File(path)
+}
+
+func (a *App) upload(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, a.cfg.MaxBatchBytes+(10<<20))
+	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
+		fail(c, 413, "batch_too_large", "invalid or oversized multipart request")
+		return
+	}
+	version := strings.TrimSpace(c.PostForm("version"))
+	if version == "" || len(version) > 255 {
+		fail(c, 400, "invalid_version", "version is required and must not exceed 255 characters")
+		return
+	}
+	headers := c.Request.MultipartForm.File["files"]
+	if len(headers) == 0 {
+		fail(c, 400, "files_required", "at least one file is required")
+		return
+	}
+	projectID := c.MustGet("projectID").(uint)
+	tmp, err := os.MkdirTemp(a.cfg.StorageDir, ".upload-")
+	if err != nil {
+		fail(c, 500, "storage_error", "unable to create upload staging area")
+		return
+	}
+	defer os.RemoveAll(tmp)
+	seen := map[string]bool{}
+	files := make([]ArtifactFile, 0, len(headers))
+	var total int64
+	for i, h := range headers {
+		name := h.Filename
+		if !validFilename(name) || seen[name] {
+			fail(c, 400, "invalid_filename", "file names must be unique, plain file names")
+			return
+		}
+		seen[name] = true
+		if h.Size > a.cfg.MaxFileBytes {
+			fail(c, 413, "file_too_large", name+" exceeds the file size limit")
+			return
+		}
+		total += h.Size
+		if total > a.cfg.MaxBatchBytes {
+			fail(c, 413, "batch_too_large", "files exceed the batch size limit")
+			return
+		}
+		src, err := h.Open()
+		if err != nil {
+			fail(c, 400, "file_read_error", "unable to read "+name)
+			return
+		}
+		stored := fmt.Sprintf("%04d-%x", i, sha256.Sum256([]byte(name)))
+		dst, err := os.OpenFile(filepath.Join(tmp, stored), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if err != nil {
+			src.Close()
+			fail(c, 500, "storage_error", "unable to stage file")
+			return
+		}
+		hash := sha256.New()
+		n, copyErr := io.Copy(io.MultiWriter(dst, hash), io.LimitReader(src, a.cfg.MaxFileBytes+1))
+		closeErr := dst.Close()
+		src.Close()
+		if copyErr != nil || closeErr != nil || n > a.cfg.MaxFileBytes {
+			fail(c, 413, "file_too_large", "unable to save "+name)
+			return
+		}
+		files = append(files, ArtifactFile{OriginalName: name, StoredName: stored, Size: n, SHA256: hex.EncodeToString(hash.Sum(nil)), MIMEType: h.Header.Get("Content-Type")})
+	}
+	var existing Release
+	if err := a.db.Preload("Files").Where("project_id = ? AND version = ?", projectID, version).First(&existing).Error; err == nil {
+		if artifactFilesEqual(existing.Files, files) {
+			c.JSON(200, existing)
+		} else {
+			fail(c, 409, "release_exists", "release version already exists with different files")
+		}
+		return
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		fail(c, 500, "database_error", "unable to check release")
+		return
+	}
+	release := Release{ProjectID: projectID, Version: version, CommitSHA: c.PostForm("commit_sha"), Branch: c.PostForm("branch"), JobURL: c.PostForm("job_url"), PipelineID: c.PostForm("pipeline_id")}
+	final := ""
+	err = a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&release).Error; err != nil {
+			return err
+		}
+		final = filepath.Join(a.cfg.StorageDir, strconv.FormatUint(uint64(projectID), 10), strconv.FormatUint(uint64(release.ID), 10))
+		if err := os.MkdirAll(filepath.Dir(final), 0755); err != nil {
+			return err
+		}
+		if err := os.Rename(tmp, final); err != nil {
+			return err
+		}
+		for i := range files {
+			files[i].ReleaseID = release.ID
+		}
+		if err := tx.Create(&files).Error; err != nil {
+			_ = os.RemoveAll(final)
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		if final != "" {
+			_ = os.RemoveAll(final)
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			if fetchErr := a.db.Preload("Files").Where("project_id = ? AND version = ?", projectID, version).First(&existing).Error; fetchErr == nil && artifactFilesEqual(existing.Files, files) {
+				c.JSON(200, existing)
+			} else {
+				fail(c, 409, "release_exists", "release version already exists with different files")
+			}
+		} else {
+			fail(c, 500, "upload_failed", "unable to save release")
+		}
+		return
+	}
+	release.Files = files
+	for _, hook := range a.releaseHooks {
+		hook(release)
+	}
+	c.JSON(201, release)
+}
+func artifactFilesEqual(existing, incoming []ArtifactFile) bool {
+	if len(existing) != len(incoming) {
+		return false
+	}
+	byName := make(map[string]ArtifactFile, len(existing))
+	for _, file := range existing {
+		byName[file.OriginalName] = file
+	}
+	for _, file := range incoming {
+		old, ok := byName[file.OriginalName]
+		if !ok || old.Size != file.Size || old.SHA256 != file.SHA256 {
+			return false
+		}
+	}
+	return true
+}
+func validFilename(name string) bool {
+	return name != "" && name != "." && name != ".." && filepath.Base(name) == name && !strings.ContainsAny(name, "/\\\x00")
+}
