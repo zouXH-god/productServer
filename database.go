@@ -49,8 +49,14 @@ func migrateAndBootstrap(db *gorm.DB, c Config) error {
 			}
 		}
 	}
-	if err := db.AutoMigrate(&User{}, &Project{}, &ProjectToken{}, &Release{}, &ArtifactFile{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &Project{}, &ProjectToken{}, &Release{}, &ArtifactFile{}, &SSHCredential{}, &SSHConnection{}, &Workflow{}, &ReleaseEvent{}, &WorkflowRun{}, &WorkflowNodeRun{}, &WorkflowLock{}, &ExecutionSlot{}); err != nil {
 		return err
+	}
+	if c.WorkerConcurrency <= 0 {
+		c.WorkerConcurrency = 4
+	}
+	for i := 1; i <= c.WorkerConcurrency; i++ {
+		db.FirstOrCreate(&ExecutionSlot{}, ExecutionSlot{ID: uint(i)})
 	}
 	var projects []Project
 	if err := db.Find(&projects).Error; err != nil {

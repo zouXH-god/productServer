@@ -42,7 +42,19 @@ func fail(c *gin.Context, status int, code, message string) {
 	c.AbortWithStatusJSON(status, gin.H{"error": apiError{code, message}})
 }
 func newApp(db *gorm.DB, cfg Config) (*App, error) {
+	if cfg.WorkflowLogDir == "" {
+		cfg.WorkflowLogDir = filepath.Join(filepath.Dir(cfg.StorageDir), "logs")
+	}
+	if cfg.WorkflowWorkDir == "" {
+		cfg.WorkflowWorkDir = filepath.Join(filepath.Dir(cfg.StorageDir), "work")
+	}
 	if err := os.MkdirAll(cfg.StorageDir, 0755); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(cfg.WorkflowLogDir, 0755); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(cfg.WorkflowWorkDir, 0755); err != nil {
 		return nil, err
 	}
 	a := &App{db: db, cfg: cfg, router: gin.New()}
@@ -71,6 +83,7 @@ func (a *App) routes() {
 	api.GET("/projects/:id/releases", a.listReleases)
 	api.GET("/projects/:id/releases/:releaseId", a.getRelease)
 	api.GET("/projects/:id/releases/:releaseId/files/:fileId/download", a.download)
+	a.workflowRoutes(api)
 	assets, _ := fs.Sub(frontendFS, "frontend/dist")
 	r.NoRoute(func(c *gin.Context) {
 		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
@@ -547,7 +560,11 @@ func (a *App) upload(c *gin.Context) {
 		fail(c, 500, "database_error", "unable to check release")
 		return
 	}
-	release := Release{ProjectID: projectID, Version: version, CommitSHA: c.PostForm("commit_sha"), Branch: c.PostForm("branch"), JobURL: c.PostForm("job_url"), PipelineID: c.PostForm("pipeline_id")}
+	refType := c.PostForm("ref_type")
+	if refType == "" && c.PostForm("commit_sha") != "" {
+		refType = "commit"
+	}
+	release := Release{ProjectID: projectID, Version: version, CommitSHA: c.PostForm("commit_sha"), Branch: c.PostForm("branch"), JobURL: c.PostForm("job_url"), PipelineID: c.PostForm("pipeline_id"), RefType: refType}
 	final := ""
 	err = a.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&release).Error; err != nil {
@@ -565,6 +582,9 @@ func (a *App) upload(c *gin.Context) {
 		}
 		if err := tx.Create(&files).Error; err != nil {
 			_ = os.RemoveAll(final)
+			return err
+		}
+		if err := tx.Create(&ReleaseEvent{ReleaseID: release.ID}).Error; err != nil {
 			return err
 		}
 		return nil

@@ -15,7 +15,7 @@ jobs:
         run: printf 'Product Server CI upload test\n' > artifact.txt
 
       - name: Upload artifact to Product Server
-        uses: https://gitea.s1f.ren/shiran/product-server-action@v1
+        uses: https://gitea.s1f.ren/shiran/product-server-action@v1.1
         with:
           url: http://server_a_00059.hostidc.net:8089/
           token: ps_tApTL53hjRhLY4iHPSpcHsdGs02NE3m8fgJ639SLfDU

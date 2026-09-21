@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"os"
 )
 
 func main() {
@@ -16,10 +17,18 @@ func main() {
 	if err := migrateAndBootstrap(db, cfg); err != nil {
 		log.Fatal(err)
 	}
+	if len(os.Args) > 1 && os.Args[1] == "worker" {
+		log.Printf("workflow worker started")
+		if err := runWorker(db, cfg); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	app, err := newApp(db, cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
+	go app.dispatchReleaseEvents()
 	log.Printf("product server listening on %s", cfg.HTTPAddr)
 	if err := app.router.Run(cfg.HTTPAddr); err != nil {
 		log.Fatal(err)

@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -313,4 +312,3 @@ func signTestJWT(t *testing.T, a *App, id uint, exp time.Time) string {
 	}
 	return s
 }
-func itoa[T ~uint](v T) string { return strconv.FormatUint(uint64(v), 10) }

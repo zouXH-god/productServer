@@ -18,9 +18,9 @@ function downloadTemplate(file:File){return `${location.origin}/api/download?tok
 onMounted(load)
 </script>
 <template><div v-if="project">
-  <div class="page-title"><div><router-link to="/">← 项目</router-link><h1>{{project.name}}</h1></div><button class="danger" @click="removeProject">删除项目</button></div><p v-if="error" class="error">{{error}}</p>
+  <div class="page-title"><div><router-link to="/">← 项目</router-link><h1>{{project.name}}</h1></div><div><router-link class="button-link" :to="`/projects/${id}/workflows`">部署工作流</router-link> <button class="danger" @click="removeProject">删除项目</button></div></div><p v-if="error" class="error">{{error}}</p>
   <section class="card"><h2>项目 Token</h2><p>该 Token 可上传和下载项目产物。当前前缀：<code>{{token?.prefix}}…</code>，最后使用：{{token?.last_used_at?new Date(token.last_used_at).toLocaleString():'从未'}}</p><button @click="rotate">轮换 Token</button><div v-if="newToken" class="token-once"><strong>仅显示一次，请立即保存</strong><code>{{newToken}}</code><button class="quiet" @click="copy(newToken)">复制</button></div></section>
-  <section class="card"><h2>GitHub Action</h2><pre><code>- uses: shiran/product-server-action@v1
+  <section class="card"><h2>GitHub Action</h2><pre><code>- uses: shiran/product-server-action@v1.1
   with:
     url: $&#123;&#123; secrets.ARTIFACT_SERVER_URL &#125;&#125;
     token: $&#123;&#123; secrets.ARTIFACT_SERVER_TOKEN &#125;&#125;
