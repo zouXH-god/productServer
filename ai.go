@@ -468,7 +468,7 @@ func aiTools() []map[string]any {
 }
 func moduleCatalog() map[string]any {
 	return map[string]any{
-		"archive":            map[string]any{"name": "归档压缩", "config": map[string]any{"file_pattern": "正则，必填", "output": "工作区相对输出路径，必填", "format": "zip|tar.gz"}},
+		"archive":            map[string]any{"name": "归档压缩", "workspace": map[string]any{"archive/": "Action 上传的原始压缩包", "files/": "自动解压后的文件树"}, "config": map[string]any{"file_pattern": "工作区文件正则，必填；可用 ^archive/ 或 ^files/ 选择文件类型", "output": "工作区相对输出路径，必填", "format": "zip|tar.gz"}},
 		"extract":            map[string]any{"name": "本地解压文件", "config": map[string]any{"file_pattern": "选择一个本地产物的正则，必填", "output": "工作区相对目录，必填"}},
 		"sftp_upload":        map[string]any{"name": "SFTP 上传文件或目录", "config": map[string]any{"connection_id": "服务器连接 ID，必填", "file_pattern": "本地文件正则，必填", "destination": "远端目录，必填"}},
 		"sftp_extract":       map[string]any{"name": "上传 Action 唯一压缩包并在远端解压", "usage": "需要上传发布中的唯一 Action 压缩包时必须优先使用本模块，不要组合 sftp_upload 和 extract", "config": map[string]any{"connection_id": "服务器连接 ID，必填", "destination": "远端解压目录，必填", "permission": "3或4位八进制权限，默认0755", "keep_archive": "是否保留远端压缩包"}},

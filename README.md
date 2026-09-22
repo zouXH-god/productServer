@@ -89,6 +89,8 @@ curl --get 'https://artifacts.example.com/api/download' \
 
 项目可配置由产物上传自动触发的 DAG 工作流，支持任意版本、Tag、Commit 和 Tag glob。首版模块包括归档、安全解压、SFTP 上传、SSH 命令、受控 Webhook 和摘要校验。
 
+Worker 会将发布文件隔离到工作区的两个目录：`input/archive/` 保存 Action 上传的原始压缩包，`input/files/` 保存自动解压后的文件树。文件模块可使用 `^archive/` 或 `^files/` 正则直接选择对应内容；旧工作流中不带目录前缀的正则仍兼容。
+
 生产环境分别运行服务和 Worker：
 
 ```bash

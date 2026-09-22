@@ -18,7 +18,7 @@ export const router = createRouter({ history: createWebHistory(), routes: [
   { path: '/', component: DashboardView, meta: { auth: true,title:'概览' } },
   { path: '/projects', component: ProjectsView, meta: { auth: true,title:'项目' } },
   { path: '/projects/:id', component: ProjectView, meta: { auth: true,title:'项目详情' } },
-  { path: '/projects/:id/workflows', component: WorkflowsView, meta: { auth: true,title:'工作流' } },
+  { path: '/workflows/editor/:id', component: WorkflowsView, meta: { auth: true,title:'工作流编辑器' } },
   { path: '/workflows', component: WorkflowHubView, meta: { auth: true,title:'工作流' } },
   { path: '/runs', component: RunsView, meta: { auth: true,title:'运行记录' } },
   { path: '/settings/ssh', component: SSHView, meta: { auth: true,title:'SSH 资源' } },

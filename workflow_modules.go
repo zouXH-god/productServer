@@ -87,7 +87,8 @@ func matchWorkspaceFiles(input, work, expression string) ([]matchedFile, error) 
 				return relErr
 			}
 			rel = filepath.ToSlash(rel)
-			if re.MatchString(rel) {
+			legacyName := strings.TrimPrefix(strings.TrimPrefix(rel, "archive/"), "files/")
+			if re.MatchString(rel) || (legacyName != rel && re.MatchString(legacyName)) {
 				result = append(result, matchedFile{Path: current, Name: rel})
 			}
 			return nil
@@ -637,7 +638,7 @@ func sftpExtractModule(ctx context.Context, db *gorm.DB, cfg Config, run Workflo
 	if err != nil {
 		return err
 	}
-	local, err := safePath(input, archive.OriginalName)
+	local, err := releaseWorkspacePath(input, archive)
 	if err != nil {
 		return err
 	}

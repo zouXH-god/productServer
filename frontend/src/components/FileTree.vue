@@ -11,7 +11,8 @@ const emit = defineEmits<{ select: [file: any] }>();
 const tree = computed(() => {
   const root: FileTreeItem[] = [];
   for (const file of props.files || []) {
-    const parts = String(file.name || "")
+    const namespace = file.kind === "extracted" ? "files" : "archive";
+    const parts = `${namespace}/${String(file.name || "")}`
       .replaceAll("\\", "/")
       .split("/")
       .filter(Boolean);

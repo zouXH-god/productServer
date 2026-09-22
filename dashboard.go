@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/gin-gonic/gin"
+	"strconv"
 	"time"
 )
 
@@ -18,6 +19,7 @@ type dashboardProject struct {
 type dashboardRun struct {
 	ID             uint       `json:"id"`
 	ProjectID      uint       `json:"project_id"`
+	WorkflowID     uint       `json:"workflow_id"`
 	ProjectName    string     `json:"project_name"`
 	WorkflowName   string     `json:"workflow_name"`
 	Version        string     `json:"version"`
@@ -84,7 +86,7 @@ func (a *App) dashboard(c *gin.Context) {
 			}
 			a.db.Model(&WorkflowNodeRun{}).Where("run_id=?", r.ID).Count(&total)
 			a.db.Model(&WorkflowNodeRun{}).Where("run_id=? AND status IN ?", r.ID, []string{"succeeded", "failed", "cancelled"}).Count(&done)
-			runs = append(runs, dashboardRun{r.ID, r.ProjectID, p.Name, w.Name, rel.Version, r.Status, r.CreatedAt, r.StartedAt, r.FinishedAt, total, done, r.TriggerSource, r.ScheduledFor})
+			runs = append(runs, dashboardRun{r.ID, r.ProjectID, r.WorkflowID, p.Name, w.Name, rel.Version, r.Status, r.CreatedAt, r.StartedAt, r.FinishedAt, total, done, r.TriggerSource, r.ScheduledFor})
 		}
 	}
 	c.JSON(200, gin.H{"stats": gin.H{"projects": len(projects), "releases": releases, "workflows": workflows, "running": running, "failed": failed}, "projects": summaries, "runs": runs})
@@ -111,6 +113,22 @@ func (a *App) allRuns(c *gin.Context) {
 		return
 	}
 	q := a.db.Where("project_id IN ?", ids)
+	if raw := c.Query("project_id"); raw != "" {
+		projectID, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			fail(c, 400, "invalid_project_id", "project_id must be an integer")
+			return
+		}
+		q = q.Where("project_id=?", uint(projectID))
+	}
+	if raw := c.Query("workflow_id"); raw != "" {
+		workflowID, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			fail(c, 400, "invalid_workflow_id", "workflow_id must be an integer")
+			return
+		}
+		q = q.Where("workflow_id=?", uint(workflowID))
+	}
 	if s := c.Query("status"); s != "" {
 		q = q.Where("status=?", s)
 	}
@@ -129,7 +147,7 @@ func (a *App) allRuns(c *gin.Context) {
 		}
 		a.db.Model(&WorkflowNodeRun{}).Where("run_id=?", r.ID).Count(&total)
 		a.db.Model(&WorkflowNodeRun{}).Where("run_id=? AND status IN ?", r.ID, []string{"succeeded", "failed", "cancelled"}).Count(&done)
-		runs = append(runs, dashboardRun{r.ID, r.ProjectID, p.Name, w.Name, rel.Version, r.Status, r.CreatedAt, r.StartedAt, r.FinishedAt, total, done, r.TriggerSource, r.ScheduledFor})
+		runs = append(runs, dashboardRun{r.ID, r.ProjectID, r.WorkflowID, p.Name, w.Name, rel.Version, r.Status, r.CreatedAt, r.StartedAt, r.FinishedAt, total, done, r.TriggerSource, r.ScheduledFor})
 	}
 	c.JSON(200, runs)
 }

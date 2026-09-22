@@ -182,7 +182,15 @@ func executeRun(db *gorm.DB, cfg Config, worker string, run WorkflowRun) {
 	os.MkdirAll(input, 0755)
 	os.MkdirAll(work, 0755)
 	for _, f := range release.Files {
-		copyFile(filepath.Join(cfg.StorageDir, itoa(project.ID), itoa(release.ID), f.StoredName), filepath.Join(input, f.OriginalName))
+		target, err := releaseWorkspacePath(input, f)
+		if err != nil {
+			finishRun(db, run.ID, "failed", err.Error())
+			return
+		}
+		if err = copyFile(filepath.Join(cfg.StorageDir, itoa(project.ID), itoa(release.ID), f.StoredName), target); err != nil {
+			finishRun(db, run.ID, "failed", err.Error())
+			return
+		}
 	}
 	log := &runLogger{path: run.LogPath, db: db, runID: run.ID}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -382,4 +390,16 @@ func copyFile(src, dst string) error {
 		return e
 	}
 	return ce
+}
+
+func releaseWorkspaceName(file ArtifactFile) string {
+	directory := "archive"
+	if file.Kind == "extracted" {
+		directory = "files"
+	}
+	return filepath.ToSlash(filepath.Join(directory, filepath.FromSlash(file.OriginalName)))
+}
+
+func releaseWorkspacePath(input string, file ArtifactFile) (string, error) {
+	return safePath(input, releaseWorkspaceName(file))
 }

@@ -231,6 +231,38 @@ func TestSSHPasswordConnectionIsEncrypted(t *testing.T) {
 	}
 }
 
+func TestAllRunsFiltersByProjectAndWorkflow(t *testing.T) {
+	a, _ := testApp(t)
+	jwt := loginToken(t, a)
+	projectID, _ := createProjectAndToken(t, a, jwt)
+	first := Workflow{ProjectID: projectID, Name: "first", Enabled: true, TriggerType: "any", Definition: `{"nodes":[],"edges":[]}`}
+	second := Workflow{ProjectID: projectID, Name: "second", Enabled: true, TriggerType: "any", Definition: `{"nodes":[],"edges":[]}`}
+	if err := a.db.Create(&first).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.Create(&second).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.Create(&WorkflowRun{ProjectID: projectID, WorkflowID: first.ID, Status: "queued"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.Create(&WorkflowRun{ProjectID: projectID, WorkflowID: second.ID, Status: "failed"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	w := request(t, a, "GET", fmt.Sprintf("/api/runs?project_id=%d&workflow_id=%d", projectID, second.ID), nil, map[string]string{"Authorization": "Bearer " + jwt})
+	if w.Code != 200 {
+		t.Fatalf("filter runs: %d %s", w.Code, w.Body.String())
+	}
+	var runs []dashboardRun
+	if err := json.Unmarshal(w.Body.Bytes(), &runs); err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].WorkflowID != second.ID || runs[0].ProjectID != projectID {
+		t.Fatalf("unexpected filtered runs: %#v", runs)
+	}
+}
+
 func TestCreateSSHCredentialAcceptsSnakeCasePrivateKey(t *testing.T) {
 	a, _ := testApp(t)
 	a.cfg.SecretEncryptionKey = "12345678901234567890123456789012"

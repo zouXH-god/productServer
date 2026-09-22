@@ -249,7 +249,12 @@ func executeRunV2(db *gorm.DB, cfg Config, worker string, run WorkflowRun) {
 	os.MkdirAll(input, 0755)
 	os.MkdirAll(work, 0755)
 	for _, file := range release.Files {
-		if err = copyFile(filepath.Join(cfg.StorageDir, itoa(project.ID), itoa(release.ID), file.StoredName), filepath.Join(input, file.OriginalName)); err != nil {
+		target, pathErr := releaseWorkspacePath(input, file)
+		if pathErr != nil {
+			finishRun(db, run.ID, "failed", pathErr.Error())
+			return
+		}
+		if err = copyFile(filepath.Join(cfg.StorageDir, itoa(project.ID), itoa(release.ID), file.StoredName), target); err != nil {
 			finishRun(db, run.ID, "failed", err.Error())
 			return
 		}

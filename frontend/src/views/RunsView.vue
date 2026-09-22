@@ -1,35 +1,77 @@
 <script setup lang="ts">
-// @ts-nocheck
-import {computed,onMounted,onUnmounted,ref,watch} from "vue";
-import {Activity,RefreshCw,CheckCircle2,XCircle,Clock3,LoaderCircle,Ban,Terminal,GitCommit,Box,ServerCog} from "lucide-vue-next";
-import {VueFlow,Position} from "@vue-flow/core";
-import {useRoute,useRouter} from "vue-router";
-import "@vue-flow/core/dist/style.css";
-import {api} from "../api";
-import StatusBadge from "../components/StatusBadge.vue";
+import { onMounted, ref, watch } from "vue";
+import { Activity, RefreshCw } from "lucide-vue-next";
+import { useRoute, useRouter } from "vue-router";
+import { api } from "../api";
 import EmptyState from "../components/EmptyState.vue";
-import Drawer from "../components/Drawer.vue";
-const runs=ref<any[]>([]),status=ref(""),loading=ref(false),detail=ref<any>(),open=ref(false),selected=ref<any>(),logs=ref<any[]>([]);let timer:any;
-const route=useRoute(),router=useRouter();
-const names:any={archive:"归档压缩",extract:"解压文件",sftp_upload:"SFTP 上传",sftp_extract:"上传并解压",checksum_verify:"摘要校验",foreach:"列表循环",loop_end:"循环结束",server_list:"服务器列表",server_list_end:"服务器列表结束",remote_file_exists:"远端文件存在",value_match:"值匹配",string_split:"字符串分割",ssh_command:"SSH 命令",http_webhook:"HTTP 回调"};
-async function load(){loading.value=true;runs.value=await api<any[]>(`/api/runs${status.value?`?status=${status.value}`:""}`);loading.value=false}
-async function show(run:any){open.value=true;await refresh(run.project_id,run.id);if(["queued","running"].includes(detail.value.status)){clearInterval(timer);timer=setInterval(()=>refresh(run.project_id,run.id),1500)}}
-async function refresh(project:number,id:number){detail.value=await api(`/api/projects/${project}/runs/${id}`);if(!selected.value&&detail.value.nodes?.length)selected.value=detail.value.nodes[0];else if(selected.value)selected.value=detail.value.nodes.find((n:any)=>n.id===selected.value.id)||selected.value;await loadLogs();if(!["queued","running"].includes(detail.value.status))clearInterval(timer)}
-async function loadLogs(){if(detail.value)logs.value=await api(`/api/projects/${detail.value.project_id}/runs/${detail.value.id}/logs${selected.value?`?node=${encodeURIComponent(selected.value.node_key)}`:""}`)}
-function selectNode(n:any){selected.value=n;loadLogs()}
-function duration(start:any,end:any){if(!start)return"—";const ms=Math.max(0,new Date(end||Date.now()).getTime()-new Date(start).getTime());if(ms<1000)return`${ms}ms`;const s=Math.floor(ms/1000);return s<60?`${s}s`:`${Math.floor(s/60)}m ${s%60}s`}
-function statusIcon(s:string){return s==="succeeded"?CheckCircle2:s==="failed"?XCircle:s==="running"?LoaderCircle:s==="cancelled"?Ban:Clock3}
-const graphNodes=computed(()=>{if(!detail.value)return[];const states=new Map((detail.value.nodes||[]).filter((x:any)=>x.iteration_index==null&&!x.server_connection_id).map((x:any)=>[x.node_key,x]));for(const n of detail.value.nodes||[]){if(!n.server_connection_id)continue;const key=n.node_key.replace(/\[server:\d+\]$/,"");const old:any=states.get(key),rank:any={failed:5,running:4,cancelled:3,pending:2,succeeded:1,skipped:0};if(!old||rank[n.status]>rank[old.status])states.set(key,n)}return(detail.value.definition?.nodes||[]).map((n:any)=>({id:n.id,position:n.position||{x:100,y:100},data:{label:names[n.type]||n.type,state:states.get(n.id)},class:`run-node-${states.get(n.id)?.status||"pending"}`,sourcePosition:Position.Right,targetPosition:Position.Left}))});
-const graphEdges=computed(()=>(detail.value?.definition?.edges||[]).map((e:any,i:number)=>({id:`r${i}`,source:e.from,target:e.to,label:e.condition&&e.condition!=="success"?e.condition:"",animated:detail.value?.status==="running"})));
-const serverGroups=computed(()=>{const groups=new Map<number,any>();for(const n of detail.value?.nodes||[]){if(!n.server_connection_id)continue;if(!groups.has(n.server_connection_id))groups.set(n.server_connection_id,{id:n.server_connection_id,index:n.server_index,server:n.server,nodes:[]});groups.get(n.server_connection_id).nodes.push(n)}return [...groups.values()].sort((a,b)=>(a.index??0)-(b.index??0))});
-watch(status,load);watch(open,v=>{if(!v){clearInterval(timer);detail.value=undefined;selected.value=undefined;logs.value=[];if(route.query.run)router.replace({path:"/runs"})}});onMounted(async()=>{await load();const project=Number(route.query.project),run=Number(route.query.run);if(project&&run)await show({project_id:project,id:run})});onUnmounted(()=>clearInterval(timer));
+import RunDetailDrawer from "../components/RunDetailDrawer.vue";
+import StatusBadge from "../components/StatusBadge.vue";
+
+const route = useRoute();
+const router = useRouter();
+const runs = ref<any[]>([]);
+const projects = ref<any[]>([]);
+const workflows = ref<any[]>([]);
+const status = ref("");
+const projectID = ref(Number(route.query.project) || 0);
+const workflowID = ref(Number(route.query.workflow) || 0);
+const loading = ref(false);
+const detailOpen = ref(false);
+const detailProjectID = ref<number>();
+const detailRunID = ref<number>();
+
+async function load() {
+  loading.value = true;
+  const params = new URLSearchParams();
+  if (status.value) params.set("status", status.value);
+  if (projectID.value) params.set("project_id", String(projectID.value));
+  if (workflowID.value) params.set("workflow_id", String(workflowID.value));
+  try {
+    runs.value = await api<any[]>(`/api/runs${params.size ? `?${params}` : ""}`);
+  } finally {
+    loading.value = false;
+  }
+}
+async function loadWorkflows() {
+  workflows.value = projectID.value ? await api<any[]>(`/api/projects/${projectID.value}/workflows`) : [];
+}
+function show(run: any) {
+  detailProjectID.value = run.project_id;
+  detailRunID.value = run.id;
+  detailOpen.value = true;
+}
+function duration(start: any, end: any) {
+  if (!start) return "—";
+  const ms = Math.max(0, new Date(end || Date.now()).getTime() - new Date(start).getTime());
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = Math.floor(ms / 1000);
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+watch(projectID, async () => { workflowID.value = 0; await loadWorkflows(); });
+watch([status, projectID, workflowID], load);
+watch(detailOpen, open => {
+  if (!open && route.query.run) {
+    router.replace({
+      path: "/runs",
+      query: {
+        ...(projectID.value ? { project: String(projectID.value) } : {}),
+        ...(workflowID.value ? { workflow: String(workflowID.value) } : {})
+      }
+    });
+  }
+});
+onMounted(async () => {
+  projects.value = await api<any[]>("/api/projects");
+  await loadWorkflows();
+  await load();
+  const project = Number(route.query.project), run = Number(route.query.run);
+  if (project && run) show({ project_id: project, id: run });
+});
 </script>
+
 <template>
-<div class="page-heading"><div><span class="eyebrow">自动化</span><h1>运行记录</h1><p>查看部署状态、执行图、节点日志和持久化输出。</p></div><button class="btn secondary" @click="load"><RefreshCw/>刷新</button></div>
-<section class="card"><div class="filter-bar"><select v-model="status"><option value="">全部状态</option><option value="queued">等待中</option><option value="running">运行中</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="cancelled">已取消</option></select></div><div v-if="loading" class="skeleton list-skeleton"></div><div v-else class="run-list"><button v-for="r in runs" :key="r.id" class="run-row run-row-button" @click="show(r)"><span class="card-icon"><Activity/></span><div class="run-main"><b>{{r.workflow_name||'工作流'}}</b><span>{{r.project_name}} · {{r.trigger_source==='schedule'?'定时计划':r.trigger_source==='manual'?'手动运行':r.version}} · #{{r.id}}</span></div><span>{{r.completed_nodes}} / {{r.node_count}} 节点</span><span>{{duration(r.started_at,r.finished_at)}}</span><StatusBadge :status="r.status"/></button><EmptyState v-if="!runs.length" title="没有符合条件的运行"/></div></section>
-<Drawer v-model="open" wide :title="detail?`${detail.workflow_name} · 运行 #${detail.id}`:'运行详情'">
-<div v-if="detail" class="run-detail"><section class="run-summary card"><div><small>状态</small><StatusBadge :status="detail.status"/></div><div><small>{{detail.trigger_source==='schedule'?'计划时间':'版本'}}</small><b><Box/>{{detail.trigger_source==='schedule'?new Date(detail.scheduled_for).toLocaleString():detail.version}}</b></div><div><small>触发来源</small><b class="mono"><GitCommit/>{{({artifact:'产物上传',manual:'手动运行',schedule:'定时计划'} as any)[detail.trigger_source]||detail.trigger_source||'产物上传'}}</b></div><div><small>总耗时</small><b>{{duration(detail.started_at,detail.finished_at)}}</b></div></section><p v-if="detail.error_summary" class="notice notice-danger">{{detail.error_summary}}</p>
-<div class="run-visual"><aside class="run-jobs"><b>所有节点</b><template v-if="serverGroups.length"><div v-for="group in serverGroups" :key="group.id" class="run-server-group"><strong><ServerCog/>{{group.server?.name||`服务器 #${group.id}`}}<small>{{group.server?`${group.server.username}@${group.server.host}:${group.server.port}`:''}}</small></strong><button v-for="n in group.nodes" :key="n.id" :class="{active:selected?.id===n.id}" @click="selectNode(n)"><component :is="statusIcon(n.status)" :class="{spin:n.status==='running'}"/><span>{{names[n.module]||n.module}}<small>{{n.node_key}} · {{duration(n.started_at,n.finished_at)}}</small></span></button></div></template><button v-for="n in detail.nodes.filter((x:any)=>!x.server_connection_id)" :key="n.id" :class="{active:selected?.id===n.id}" @click="selectNode(n)"><component :is="statusIcon(n.status)" :class="{spin:n.status==='running'}"/><span>{{names[n.module]||n.module}}<small>{{n.node_key}} · {{duration(n.started_at,n.finished_at)}}</small></span></button></aside><div class="run-graph"><VueFlow :nodes="graphNodes" :edges="graphEdges" fit-view-on-init :nodes-draggable="false" :nodes-connectable="false" :elements-selectable="false"><template #node-default="p"><div class="run-graph-node"><component :is="statusIcon(p.data.state?.status||'pending')"/><span><b>{{p.data.label}}</b><small>{{p.id}}</small></span><em>{{duration(p.data.state?.started_at,p.data.state?.finished_at)}}</em></div></template></VueFlow></div></div>
-<section v-if="selected" class="run-output-grid"><article class="card run-output"><header><Terminal/>节点日志 <span>{{selected.node_key}}</span></header><pre><template v-for="line in logs">[{{line.time}}] [{{line.stream}}] {{line.message}}{{'\n'}}</template><span v-if="!logs.length" class="muted">暂无日志记录</span></pre></article><article class="card run-node-meta"><header>节点输出</header><div class="detail-list"><div><span>状态</span><StatusBadge :status="selected.status"/></div><div><span>尝试次数</span><b>{{selected.attempts}}</b></div><div><span>耗时</span><b>{{duration(selected.started_at,selected.finished_at)}}</b></div></div><p v-if="selected.error_summary" class="error">{{selected.error_summary}}</p><div v-if="selected.outputs_sensitive" class="notice notice-warning">输出包含敏感信息，已加密保存。</div><pre v-else-if="selected.outputs">{{JSON.stringify(selected.outputs,null,2)}}</pre><p v-else class="muted">该节点没有结构化输出。</p></article></section></div>
-</Drawer>
+  <div class="page-heading"><div><span class="eyebrow">自动化</span><h1>运行记录</h1><p>查看部署状态、执行图、节点日志和持久化输出。</p></div><button class="btn secondary" @click="load"><RefreshCw/>刷新</button></div>
+  <section class="card"><div class="filter-bar"><label>项目<select v-model.number="projectID"><option :value="0">全部项目</option><option v-for="project in projects" :key="project.id" :value="project.id">{{project.name}}</option></select></label><label>工作流<select v-model.number="workflowID" :disabled="!projectID"><option :value="0">全部工作流</option><option v-for="flow in workflows" :key="flow.id" :value="flow.id">{{flow.name}}</option></select></label><label>状态<select v-model="status"><option value="">全部状态</option><option value="queued">等待中</option><option value="running">运行中</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="cancelled">已取消</option></select></label></div><div v-if="loading" class="skeleton list-skeleton"></div><div v-else class="run-list"><button v-for="run in runs" :key="run.id" class="run-row run-row-button" @click="show(run)"><span class="card-icon"><Activity/></span><div class="run-main"><b>{{run.workflow_name||'工作流'}}</b><span>{{run.project_name}} · {{run.trigger_source==='schedule'?'定时计划':run.trigger_source==='manual'?'手动运行':run.version}} · #{{run.id}}</span></div><span>{{run.completed_nodes}} / {{run.node_count}} 节点</span><span>{{duration(run.started_at,run.finished_at)}}</span><StatusBadge :status="run.status"/></button><EmptyState v-if="!runs.length" title="没有符合条件的运行"/></div></section>
+  <RunDetailDrawer v-model="detailOpen" :project-id="detailProjectID" :run-id="detailRunID"/>
 </template>

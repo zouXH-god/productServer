@@ -22,7 +22,6 @@ import {
   Copy,
   Trash2,
   ArrowLeft,
-  Workflow as WorkflowIcon,
   Eye,
   GitBranch,
   Split,
@@ -30,18 +29,15 @@ import {
   CircleStop,
   FileSearch,
   ServerCog,
-  CalendarClock,
 } from "lucide-vue-next";
 import { api } from "../api";
 import Modal from "../components/Modal.vue";
 import Drawer from "../components/Drawer.vue";
-import StatusBadge from "../components/StatusBadge.vue";
 import EmptyState from "../components/EmptyState.vue";
 import FileTree from "../components/FileTree.vue";
 import AIChatPanel from "../components/AIChatPanel.vue";
-const pid = Number(useRoute().params.id),
-  flows = ref<any[]>([]),
-  runs = ref<any[]>([]),
+const route = useRoute(),
+  pid = Number(route.params.id),
   releases = ref<any[]>([]),
   connections = ref<any[]>([]),
   editing = ref<number>(),
@@ -63,7 +59,7 @@ const pid = Number(useRoute().params.id),
   history = ref<string[]>([]),
   future = ref<string[]>([]),
   error = ref("");
-const project=ref<any>(),scheduleOpen=ref(false),scheduleFlow=ref<any>(),scheduleForm=ref({cron:"0 * * * *",timezone:"Asia/Shanghai",enabled:true,allow_parallel:false});
+const project=ref<any>();
 const canDevelop=computed(()=>['owner','admin','developer'].includes(project.value?.role));
 const router = useRouter();
 const { addEdges, fitView } = useVueFlow();
@@ -141,11 +137,8 @@ function normalizeNodeConfig(type:string, source:any) {
   return {...(modules[type]?.defaults||{}),...c};
 }
 async function load() {
-  project.value=await api(`/api/projects/${pid}`);[flows.value,runs.value,connections.value]=await Promise.all([api(`/api/projects/${pid}/workflows`),api(`/api/projects/${pid}/runs`),api(`/api/ssh-connections?project_id=${pid}`)]);releases.value=project.value.type==='artifact'?await api(`/api/projects/${pid}/releases`):[];
+  project.value=await api(`/api/projects/${pid}`);connections.value=await api(`/api/ssh-connections?project_id=${pid}`);releases.value=project.value.type==='artifact'?await api(`/api/projects/${pid}/releases`):[];
 }
-function configureSchedule(flow:any){scheduleFlow.value=flow;const s=flow.schedule;scheduleForm.value={cron:s?.cron||"0 * * * *",timezone:s?.timezone||"Asia/Shanghai",enabled:s?.enabled??true,allow_parallel:s?.allow_parallel??false};scheduleOpen.value=true}
-async function saveSchedule(){await api(`/api/projects/${pid}/workflows/${scheduleFlow.value.id}/schedule`,{method:'PUT',body:JSON.stringify(scheduleForm.value)});scheduleOpen.value=false;await load()}
-async function triggerNow(){await api(`/api/projects/${pid}/workflows/${scheduleFlow.value.id}/schedule/trigger`,{method:'POST'});scheduleOpen.value=false;await load()}
 async function loadPreview() {
   if (!previewReleaseID.value) {
     previewFiles.value = [];
@@ -166,20 +159,23 @@ const patternResult = computed(() => {
   try {
     const regex = new RegExp(expression);
     return {
-      files: previewFiles.value.filter((file) => regex.test(file.name)),
+      files: previewFiles.value.filter((file) => regex.test(workspaceFileName(file)) || regex.test(file.name)),
       error: "",
     };
   } catch (e: any) {
     return { files: [], error: e.message };
   }
 });
+function workspaceFileName(file: any) {
+  return `${file.kind === "extracted" ? "files" : "archive"}/${String(file.name || "").replaceAll("\\", "/")}`;
+}
 const supportsPattern = computed(() =>
   ["archive", "extract", "sftp_upload", "checksum_verify"].includes(
     selected.value?.data?.module,
   ),
 );
 function selectExactFile(file: any) {
-  const escaped = file.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escaped = workspaceFileName(file).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   selected.value.data.config.file_pattern = `^${escaped}$`;
 }
 function snapshot() {
@@ -404,9 +400,12 @@ function key(e: KeyboardEvent) {
   else if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && editing.value)
     runOpen.value = true;
 }
-onMounted(() => {
-  load();
-  document.addEventListener("keydown", key);
+onMounted(async () => {
+	await load();
+	if (route.query.new === "1" && canDevelop.value) beginCreate();
+	else if (Number(route.query.workflow)) await edit(Number(route.query.workflow));
+	else { await router.replace("/workflows"); return; }
+	document.addEventListener("keydown", key);
 });
 onUnmounted(() => document.removeEventListener("keydown", key));
 const moduleInfo = computed(() =>
@@ -430,81 +429,11 @@ function applyAICanvas(canvas:any){
   edges.value=(canvas.edges||[]).map((e:any,i:number)=>({id:`ai_e_${i}_${Date.now()}`,source:e.from,target:e.to,condition:e.condition||"success",label:e.condition&&e.condition!=="success"?e.condition:""}));
   saved.value=false; nextTick(()=>fitView({padding:.2}));
 }
-function triggerLabel(w: any) {
-	if(project.value?.type==='scheduled')return w.schedule?.enabled?`${w.schedule.cron} · ${w.schedule.timezone}`:'未配置或未启用计划';
-  return (
-    (
-      {
-        any: "任意版本",
-        tag: "仅 Tag",
-        commit: "仅 Commit",
-        tag_glob: `Tag · ${w.trigger_glob}`,
-      } as any
-    )[w.trigger_type] || w.trigger_type
-  );
-}
 </script>
 <template>
-  <div v-if="editing === undefined">
-    <div class="page-heading">
-      <div>
-        <span class="eyebrow">自动化部署</span>
-        <h1>工作流</h1>
-        <p>通过可视化模块编排产物发布后的自动操作。</p>
-      </div>
-	  <button v-if="canDevelop" class="btn" @click="beginCreate"><Plus />新建工作流</button>
-    </div>
-    <div class="workflow-cards">
-      <article
-        v-for="f in flows"
-        :key="f.id"
-        class="card workflow-card"
-        @click="edit(f.id)"
-      >
-        <div class="card-icon"><WorkflowIcon /></div>
-        <div class="grow">
-          <div class="card-title">
-            <h3>{{ f.name }}</h3>
-            <StatusBadge
-              :status="f.enabled ? 'success' : 'disabled'"
-              :label="f.enabled ? '已启用' : '已停用'"
-            />
-          </div>
-          <p>{{ triggerLabel(f) }}</p>
-		  <small v-if="project?.type==='scheduled'&&f.schedule?.next_run_at">下次 {{new Date(f.schedule.next_run_at).toLocaleString()}} · 最近 {{f.last_schedule_event?.status||'尚未触发'}}</small><small v-else>更新于 {{ new Date(f.updated_at).toLocaleString() }}</small><button v-if="project?.type==='scheduled'&&canDevelop" class="btn secondary small-btn" @click.stop="configureSchedule(f)"><CalendarClock/>定时设置</button>
-        </div>
-      </article>
-      <EmptyState
-        v-if="!flows.length"
-        title="暂无工作流"
-        text="用可视化模块创建第一条部署流程。"
-        ><button class="btn" @click="beginCreate">
-          <Plus />创建工作流
-        </button></EmptyState
-      >
-    </div>
-    <section class="section-spaced">
-      <div class="section-head">
-        <div>
-          <h2>最近运行</h2>
-          <p>此项目最近的执行记录</p>
-        </div>
-      </div>
-      <div class="card run-list">
-        <div v-for="r in runs.slice(0, 8)" :key="r.id" class="run-row">
-          <b>#{{ r.id }}</b
-          ><span class="grow">{{
-            new Date(r.created_at).toLocaleString()
-          }}</span
-          ><StatusBadge :status="r.status" />
-        </div>
-        <EmptyState v-if="!runs.length" title="暂无运行记录" />
-      </div>
-    </section>
-  </div>
-  <div v-else class="workflow-editor">
+  <div class="workflow-editor">
     <header class="editor-toolbar">
-      <button class="icon-btn" title="返回" @click="editing = undefined">
+      <button class="icon-btn" title="返回工作流列表" @click="router.push('/workflows')">
         <ArrowLeft />
       </button>
       <div class="editor-name">
@@ -815,7 +744,7 @@ function triggerLabel(w: any) {
       >Tag 匹配规则<input v-model="triggerGlob" placeholder="v*"
     /></label>
     <div class="panel-actions">
-      <button class="btn secondary" @click="createOpen = false">取消</button
+      <button class="btn secondary" @click="router.push('/workflows')">取消</button
       ><button class="btn" @click="startEditor">进入编辑器</button>
     </div></Modal
   ><Modal
@@ -833,6 +762,5 @@ function triggerLabel(w: any) {
       ><button class="btn" :disabled="project?.type==='artifact'&&!releaseID" @click="run">
         <Play />开始运行
       </button>
-    </div></Modal
-  ><Modal v-model="scheduleOpen" title="工作流定时计划" description="使用标准五段 Cron 和 IANA 时区。"><label>快捷计划<select @change="scheduleForm.cron=($event.target as HTMLSelectElement).value"><option value="0 * * * *">每小时</option><option value="0 0 * * *">每天 00:00</option><option value="0 0 * * 1">每周一 00:00</option></select></label><label>Cron<input v-model="scheduleForm.cron" placeholder="0 * * * *"></label><label>时区<input v-model="scheduleForm.timezone" placeholder="Asia/Shanghai"></label><label class="checkbox-row"><input v-model="scheduleForm.enabled" type="checkbox">启用计划</label><label class="checkbox-row"><input v-model="scheduleForm.allow_parallel" type="checkbox">允许同一工作流并行运行</label><div class="panel-actions"><button class="btn secondary" @click="triggerNow">立即测试</button><button class="btn" @click="saveSchedule">保存计划</button></div></Modal>
+    </div></Modal>
 </template>

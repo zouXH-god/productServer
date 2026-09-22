@@ -10,6 +10,10 @@ import {
   ChevronDown,
   Users,
   Plus,
+  ArrowUpRight,
+  Play,
+  Pencil,
+  History,
 } from "lucide-vue-next";
 import { api, authDownload } from "../api";
 import Modal from "../components/Modal.vue";
@@ -17,6 +21,8 @@ import Drawer from "../components/Drawer.vue";
 import EmptyState from "../components/EmptyState.vue";
 import FileTree from "../components/FileTree.vue";
 import EnvironmentVariables from "../components/EnvironmentVariables.vue";
+import RunDetailDrawer from "../components/RunDetailDrawer.vue";
+import StatusBadge from "../components/StatusBadge.vue";
 const route = useRoute(),
   router = useRouter(),
   id = Number(route.params.id),
@@ -31,6 +37,8 @@ const route = useRoute(),
   deleting = ref(false),
   copied = ref("");
 const members=ref<any[]>([]),memberOpen=ref(false),memberForm=ref({username:"",role:"viewer"});
+const runTarget=ref<any>(),historyTarget=ref<any>(),deleteWorkflowTarget=ref<any>(),releaseID=ref(0),running=ref(false);
+const runDetailOpen=ref(false),runDetailProjectID=ref<number>(),runDetailID=ref<number>();
 async function load() {
   project.value=await api<any>(`/api/projects/${id}`);[workflows.value,runs.value,members.value]=await Promise.all([api<any[]>(`/api/projects/${id}/workflows`),api<any[]>(`/api/projects/${id}/runs`),api<any[]>(`/api/projects/${id}/members`)]);if(project.value.type==='artifact'){releases.value=await api<any[]>(`/api/projects/${id}/releases`);token.value=await api<any>(`/api/projects/${id}/token`).catch(()=>null)}else{releases.value=[];token.value=null}
 }
@@ -59,6 +67,12 @@ async function remove() {
   await api(`/api/projects/${id}`, { method: "DELETE" });
   router.push("/projects");
 }
+function editWorkflow(flow:any){router.push({path:`/workflows/editor/${id}`,query:{workflow:String(flow.id)}})}
+function prepareRun(flow:any){runTarget.value=flow;releaseID.value=project.value.type==='artifact'?(releases.value[0]?.id||0):0}
+async function runWorkflow(){if(!runTarget.value)return;running.value=true;try{const created=await api<any>(`/api/projects/${id}/workflows/${runTarget.value.id}/runs`,{method:'POST',body:JSON.stringify({release_id:releaseID.value})});runTarget.value=undefined;await router.push({path:'/runs',query:{project:String(id),workflow:String(created.workflow_id||''),run:String(created.id)}})}finally{running.value=false}}
+function openHistory(flow:any){historyTarget.value={flow,runs:runs.value.filter((item:any)=>item.workflow_id===flow.id)}}
+function viewRun(item:any){historyTarget.value=undefined;runDetailProjectID.value=id;runDetailID.value=item.id;runDetailOpen.value=true}
+async function deleteWorkflow(){if(!deleteWorkflowTarget.value)return;await api(`/api/projects/${id}/workflows/${deleteWorkflowTarget.value.id}`,{method:'DELETE'});deleteWorkflowTarget.value=undefined;await load()}
 async function copy(text: string, key = "x") {
   await navigator.clipboard.writeText(text);
   copied.value = key;
@@ -79,7 +93,7 @@ onMounted(load);
         <p>{{project.type==='scheduled'?'定时项目':'产物项目'}} · {{project.role}} · 创建于 {{ new Date(project.created_at).toLocaleString() }}</p>
       </div>
       <div class="actions">
-        <router-link class="btn" :to="`/projects/${id}/workflows`"
+        <router-link class="btn" to="/workflows"
           ><Workflow />工作流</router-link
         ><button v-if="project.role==='owner'" class="btn danger-ghost" @click="deleting = true">
           <Trash2 />删除
@@ -99,6 +113,23 @@ onMounted(load);
       </div>
       <div class="card stat-card">
         <span>最近运行</span><strong>{{ runs[0]?.status || "暂无" }}</strong>
+      </div>
+    </section>
+    <section class="project-workflows-section">
+      <div class="section-head">
+        <div>
+          <h2>项目工作流</h2>
+          <p>直接查看或进入画布编辑该项目的自动化流程。</p>
+        </div>
+        <router-link v-if="canDevelop" class="btn secondary" :to="`/workflows/editor/${id}?new=1`"><Plus/>新建工作流</router-link>
+      </div>
+      <div class="workflow-cards">
+        <article v-for="flow in workflows" :key="flow.id" class="card workflow-card project-workflow-card">
+          <div class="card-icon"><Workflow/></div>
+          <div class="grow"><h3>{{flow.name}}</h3><p>{{flow.enabled?'已启用':'已停用'}} · {{flow.trigger_type==='tag_glob'?`Tag ${flow.trigger_glob}`:flow.trigger_type}}</p><small>更新于 {{new Date(flow.updated_at).toLocaleString()}}</small></div>
+          <div class="workflow-actions"><button v-if="canDevelop" class="btn secondary small-btn" @click="prepareRun(flow)"><Play/>运行</button><button class="btn secondary small-btn" @click="editWorkflow(flow)"><Pencil/>编辑</button><button class="btn secondary small-btn" @click="openHistory(flow)"><History/>历史</button><button v-if="canDevelop" class="icon-btn danger-text" title="删除工作流" @click="deleteWorkflowTarget=flow"><Trash2/></button></div>
+        </article>
+        <EmptyState v-if="!workflows.length" title="暂无工作流" text="创建工作流后可自动处理发布产物。"><router-link v-if="canDevelop" class="btn" :to="`/workflows/editor/${id}?new=1`"><Plus/>创建工作流</router-link></EmptyState>
       </div>
     </section>
     <section v-if="project.type==='artifact'&&canAdmin" class="card token-card">
@@ -162,7 +193,7 @@ onMounted(load);
           title="暂无产物"
           text="使用项目 Action 或上传接口提交第一个版本。"
         />
-      </div></section><section class="card"><div class="section-head"><div><h2>项目成员</h2><p>通过固定角色分配项目权限。</p></div><button v-if="canAdmin" class="btn secondary" @click="memberOpen=true"><Plus/>添加成员</button></div><div class="member-list"><div v-for="m in members" :key="m.id" class="member-row"><Users/><div class="grow"><b>{{m.user?.username}}</b><small>{{m.user?.email||m.role}}</small></div><select v-if="canAdmin&&m.role!=='owner'" :value="m.role" @change="setRole(m,($event.target as HTMLSelectElement).value)"><option value="admin">管理员</option><option value="developer">开发者</option><option value="viewer">只读</option></select><span v-else class="badge">{{m.role}}</span><button v-if="canAdmin&&m.role!=='owner'" class="icon-btn" @click="removeMember(m)"><Trash2/></button></div></div></section><EnvironmentVariables v-if="canAdmin" :project-id="id" /></template
+      </div></section><section class="card panel-card"><div class="section-head"><div><h2>项目成员</h2><p>通过固定角色分配项目权限。</p></div><button v-if="canAdmin" class="btn secondary" @click="memberOpen=true"><Plus/>添加成员</button></div><div class="member-list"><div v-for="m in members" :key="m.id" class="member-row"><Users/><div class="grow"><b>{{m.user?.username}}</b><small>{{m.user?.email||m.role}}</small></div><select v-if="canAdmin&&m.role!=='owner'" :value="m.role" @change="setRole(m,($event.target as HTMLSelectElement).value)"><option value="admin">管理员</option><option value="developer">开发者</option><option value="viewer">只读</option></select><span v-else class="badge">{{m.role}}</span><button v-if="canAdmin&&m.role!=='owner'" class="icon-btn" @click="removeMember(m)"><Trash2/></button></div></div></section><EnvironmentVariables v-if="canAdmin" :project-id="id" /></template
   ><Drawer v-model="selected" title="发布详情"
     ><template v-if="selected"
       ><div class="detail-list">
@@ -194,6 +225,9 @@ onMounted(load);
       <button class="btn secondary" @click="rotating = false">取消</button
       ><button class="btn danger" @click="rotate">确认轮换</button>
     </div></Modal
+  ><Modal :model-value="!!runTarget" title="运行工作流" @update:model-value="runTarget=undefined" :description="runTarget?.name||''"><label v-if="project?.type==='artifact'">发布版本<select v-model.number="releaseID"><option :value="0" disabled>选择版本</option><option v-for="release in releases" :key="release.id" :value="release.id">{{release.version}}</option></select></label><div v-if="project?.type==='artifact'&&!releases.length" class="notice notice-warning">该项目尚无可用发布版本，暂时无法手动运行。</div><div class="panel-actions"><button class="btn secondary" @click="runTarget=undefined">取消</button><button class="btn" :disabled="running||(project?.type==='artifact'&&!releaseID)" @click="runWorkflow"><Play/>{{running?'正在创建…':'开始运行'}}</button></div></Modal
+  ><Modal :model-value="!!historyTarget" title="运行历史" @update:model-value="historyTarget=undefined" :description="historyTarget?.flow.name||''"><div class="modal-run-list"><button v-for="item in historyTarget?.runs||[]" :key="item.id" class="run-history-row" @click="viewRun(item)"><span><b>运行 #{{item.id}}</b><small>{{new Date(item.created_at).toLocaleString()}}</small></span><StatusBadge :status="item.status"/><ArrowUpRight/></button><EmptyState v-if="historyTarget&&!historyTarget.runs.length" title="暂无运行记录"/></div></Modal
+  ><Modal :model-value="!!deleteWorkflowTarget" title="删除工作流" @update:model-value="deleteWorkflowTarget=undefined" :description="deleteWorkflowTarget?`确认删除“${deleteWorkflowTarget.name}”？此操作不可撤销。`:''"><div class="panel-actions"><button class="btn secondary" @click="deleteWorkflowTarget=undefined">取消</button><button class="btn danger" @click="deleteWorkflow"><Trash2/>删除</button></div></Modal
   ><Modal
     :model-value="!!newToken"
     title="请保存新 Token"
@@ -218,5 +252,9 @@ onMounted(load);
       <button class="btn secondary" @click="deleting = false">取消</button
       ><button class="btn danger" @click="remove">永久删除</button>
     </div></Modal
-  >
+  ><RunDetailDrawer v-model="runDetailOpen" :project-id="runDetailProjectID" :run-id="runDetailID"/>
 </template>
+<style scoped>
+.project-workflow-card { align-items: flex-start; flex-wrap: wrap; }
+.project-workflow-card .workflow-actions { width: 100%; padding-top: 12px; border-top: 1px solid var(--border); justify-content: flex-start; }
+</style>

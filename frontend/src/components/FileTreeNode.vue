@@ -27,6 +27,20 @@ const props = withDefaults(
 );
 const emit = defineEmits<{ select: [file: any] }>();
 const open = ref(props.depth < 2);
+function formatFileSize(value: unknown) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let size = bytes;
+  let unit = -1;
+  do {
+    size /= 1024;
+    unit += 1;
+  } while (size >= 1024 && unit < units.length - 1);
+  const digits = size >= 100 ? 0 : size >= 10 ? 1 : 2;
+  return `${Number(size.toFixed(digits))} ${units[unit]}`;
+}
 </script>
 
 <template>
@@ -58,7 +72,7 @@ const open = ref(props.depth < 2);
         <small>
           {{ node.file?.kind === "extracted" ? "解压文件" : "上传文件" }}
           <template v-if="node.file?.size !== undefined">
-            · {{ node.file.size }} bytes</template
+            · {{ formatFileSize(node.file.size) }}</template
           >
         </small>
       </div>

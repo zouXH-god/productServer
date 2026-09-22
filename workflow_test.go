@@ -146,6 +146,47 @@ func TestActionArchiveAndRemoteExtractCommand(t *testing.T) {
 	}
 }
 
+func TestReleaseWorkspaceSeparatesArchivesAndExtractedFiles(t *testing.T) {
+	input, work := filepath.Join(t.TempDir(), "input"), filepath.Join(t.TempDir(), "work")
+	archive := ArtifactFile{OriginalName: "artifact.zip", Kind: "uploaded"}
+	extracted := ArtifactFile{OriginalName: "dist/index.html", Kind: "extracted"}
+	archivePath, err := releaseWorkspacePath(input, archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	extractedPath, err := releaseWorkspacePath(input, extracted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.ToSlash(archivePath) != filepath.ToSlash(filepath.Join(input, "archive", "artifact.zip")) {
+		t.Fatalf("unexpected archive path: %s", archivePath)
+	}
+	if filepath.ToSlash(extractedPath) != filepath.ToSlash(filepath.Join(input, "files", "dist", "index.html")) {
+		t.Fatalf("unexpected extracted path: %s", extractedPath)
+	}
+	for _, name := range []string{archivePath, extractedPath} {
+		if err = os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.WriteFile(name, []byte("test"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	archives, err := matchWorkspaceFiles(input, work, `^archive/`)
+	if err != nil || len(archives) != 1 || archives[0].Name != "archive/artifact.zip" {
+		t.Fatalf("archive matches=%#v err=%v", archives, err)
+	}
+	files, err := matchWorkspaceFiles(input, work, `^files/`)
+	if err != nil || len(files) != 1 || files[0].Name != "files/dist/index.html" {
+		t.Fatalf("file matches=%#v err=%v", files, err)
+	}
+	legacy, err := matchWorkspaceFiles(input, work, `^dist/index\.html$`)
+	if err != nil || len(legacy) != 1 || legacy[0].Name != "files/dist/index.html" {
+		t.Fatalf("legacy matches=%#v err=%v", legacy, err)
+	}
+}
+
 func TestRuntimeTemplatesAndConditionalEdges(t *testing.T) {
 	matched := true
 	values := runtimeValues{Env: environmentSnapshot{Global: map[string]string{"REGION": "global"}, Project: map[string]string{"REGION": "project"}}, Steps: map[string]map[string]any{"split": {"count": 2}}}
