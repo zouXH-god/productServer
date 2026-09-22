@@ -3,16 +3,37 @@ package main
 import "time"
 
 type User struct {
-	ID           uint      `json:"id" gorm:"primaryKey"`
-	Username     string    `json:"username" gorm:"uniqueIndex;size:100;not null"`
-	PasswordHash string    `json:"-"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID                 uint      `json:"id" gorm:"primaryKey"`
+	Username           string    `json:"username" gorm:"uniqueIndex;size:100;not null"`
+	Email              *string   `json:"email,omitempty" gorm:"uniqueIndex;size:255"`
+	PasswordHash       string    `json:"-"`
+	IsAdmin            bool      `json:"is_admin" gorm:"index"`
+	Enabled            bool      `json:"enabled" gorm:"index;not null;default:true"`
+	MustChangePassword bool      `json:"must_change_password"`
+	TokenVersion       int       `json:"-" gorm:"not null;default:0"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 type Project struct {
 	ID        uint      `json:"id" gorm:"primaryKey"`
 	UserID    uint      `json:"-" gorm:"uniqueIndex:idx_project_owner_name;not null"`
 	Name      string    `json:"name" gorm:"uniqueIndex:idx_project_owner_name;size:150;not null"`
+	Type      string    `json:"type" gorm:"size:16;not null;default:artifact;index"`
 	CreatedAt time.Time `json:"created_at"`
+}
+type ProjectMember struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	ProjectID uint      `json:"project_id" gorm:"uniqueIndex:uniq_project_member;not null"`
+	UserID    uint      `json:"user_id" gorm:"uniqueIndex:uniq_project_member;index;not null"`
+	Role      string    `json:"role" gorm:"size:16;not null;index"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	User      User      `json:"user,omitempty" gorm:"foreignKey:UserID"`
+}
+type SystemSetting struct {
+	Key       string    `json:"key" gorm:"primaryKey;size:100"`
+	Value     string    `json:"value" gorm:"type:text"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 type ProjectToken struct {
 	ID         uint       `json:"id" gorm:"primaryKey"`
@@ -78,33 +99,119 @@ type ReleaseEvent struct {
 	CreatedAt   time.Time
 }
 type WorkflowRun struct {
-	ID              uint              `json:"id" gorm:"primaryKey"`
-	ProjectID       uint              `json:"project_id" gorm:"index"`
-	WorkflowID      uint              `json:"workflow_id" gorm:"index"`
-	ReleaseID       uint              `json:"release_id"`
-	Status          string            `json:"status" gorm:"index"`
-	Snapshot        string            `json:"-" gorm:"type:text"`
-	WorkerID        string            `json:"worker_id"`
-	LeaseUntil      *time.Time        `json:"lease_until"`
-	CancelRequested bool              `json:"cancel_requested"`
-	LogPath         string            `json:"-"`
-	LogBytes        int64             `json:"log_bytes"`
-	ErrorSummary    string            `json:"error_summary"`
-	StartedAt       *time.Time        `json:"started_at"`
-	FinishedAt      *time.Time        `json:"finished_at"`
-	CreatedAt       time.Time         `json:"created_at"`
-	Nodes           []WorkflowNodeRun `json:"nodes,omitempty" gorm:"foreignKey:RunID"`
+	ID                  uint              `json:"id" gorm:"primaryKey"`
+	ProjectID           uint              `json:"project_id" gorm:"index"`
+	WorkflowID          uint              `json:"workflow_id" gorm:"index"`
+	ReleaseID           uint              `json:"release_id"`
+	TriggerSource       string            `json:"trigger_source" gorm:"size:16;index"`
+	ScheduledFor        *time.Time        `json:"scheduled_for,omitempty" gorm:"index"`
+	DisplayVersion      string            `json:"display_version"`
+	AllowParallel       bool              `json:"allow_parallel"`
+	Status              string            `json:"status" gorm:"index"`
+	Snapshot            string            `json:"-" gorm:"type:text"`
+	EnvironmentSnapshot string            `json:"-" gorm:"type:text"`
+	WorkerID            string            `json:"worker_id"`
+	LeaseUntil          *time.Time        `json:"lease_until"`
+	CancelRequested     bool              `json:"cancel_requested"`
+	LogPath             string            `json:"-"`
+	LogBytes            int64             `json:"log_bytes"`
+	ErrorSummary        string            `json:"error_summary"`
+	StartedAt           *time.Time        `json:"started_at"`
+	FinishedAt          *time.Time        `json:"finished_at"`
+	CreatedAt           time.Time         `json:"created_at"`
+	Nodes               []WorkflowNodeRun `json:"nodes,omitempty" gorm:"foreignKey:RunID"`
+}
+type WorkflowSchedule struct {
+	ID            uint       `json:"id" gorm:"primaryKey"`
+	ProjectID     uint       `json:"project_id" gorm:"index;not null"`
+	WorkflowID    uint       `json:"workflow_id" gorm:"uniqueIndex;not null"`
+	Cron          string     `json:"cron" gorm:"size:100;not null"`
+	Timezone      string     `json:"timezone" gorm:"size:100;not null"`
+	Enabled       bool       `json:"enabled" gorm:"index"`
+	AllowParallel bool       `json:"allow_parallel"`
+	NextRunAt     *time.Time `json:"next_run_at,omitempty" gorm:"index"`
+	LastRunAt     *time.Time `json:"last_run_at,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+}
+type ScheduleEvent struct {
+	ID           uint      `json:"id" gorm:"primaryKey"`
+	ScheduleID   uint      `json:"schedule_id" gorm:"uniqueIndex:uniq_schedule_fire;index;not null"`
+	ScheduledFor time.Time `json:"scheduled_for" gorm:"uniqueIndex:uniq_schedule_fire;index;not null"`
+	Status       string    `json:"status" gorm:"size:16;index"`
+	RunID        uint      `json:"run_id,omitempty" gorm:"index"`
+	Message      string    `json:"message,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
 }
 type WorkflowNodeRun struct {
-	ID           uint       `json:"id" gorm:"primaryKey"`
-	RunID        uint       `json:"run_id" gorm:"index"`
-	NodeKey      string     `json:"node_key"`
-	Module       string     `json:"module"`
-	Status       string     `json:"status"`
-	Attempts     int        `json:"attempts"`
-	ErrorSummary string     `json:"error_summary"`
-	StartedAt    *time.Time `json:"started_at"`
-	FinishedAt   *time.Time `json:"finished_at"`
+	ID                 uint       `json:"id" gorm:"primaryKey"`
+	RunID              uint       `json:"run_id" gorm:"index"`
+	NodeKey            string     `json:"node_key"`
+	Module             string     `json:"module"`
+	Status             string     `json:"status"`
+	Attempts           int        `json:"attempts"`
+	ErrorSummary       string     `json:"error_summary"`
+	Outputs            string     `json:"outputs,omitempty" gorm:"type:text"`
+	SensitiveOutputs   string     `json:"-" gorm:"type:text"`
+	OutputsSensitive   bool       `json:"outputs_sensitive"`
+	LoopNodeKey        string     `json:"loop_node_key,omitempty" gorm:"index"`
+	IterationIndex     *int       `json:"iteration_index,omitempty"`
+	ServerListNodeKey  string     `json:"server_list_node_key,omitempty" gorm:"index"`
+	ServerConnectionID uint       `json:"server_connection_id,omitempty" gorm:"index"`
+	ServerIndex        *int       `json:"server_index,omitempty"`
+	StartedAt          *time.Time `json:"started_at"`
+	FinishedAt         *time.Time `json:"finished_at"`
+}
+type EnvironmentVariable struct {
+	ID             uint      `json:"id" gorm:"primaryKey"`
+	UserID         uint      `json:"-" gorm:"uniqueIndex:uniq_env_scope_name;not null"`
+	ProjectID      uint      `json:"project_id" gorm:"uniqueIndex:uniq_env_scope_name;not null;default:0"`
+	Name           string    `json:"name" gorm:"uniqueIndex:uniq_env_scope_name;size:100;not null"`
+	Value          string    `json:"value,omitempty" gorm:"type:text"`
+	ValueEncrypted string    `json:"-" gorm:"type:text"`
+	Sensitive      bool      `json:"sensitive"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+type AIProvider struct {
+	ID               uint      `json:"id" gorm:"primaryKey"`
+	UserID           uint      `json:"-" gorm:"index;not null"`
+	Name             string    `json:"name"`
+	BaseURL          string    `json:"base_url"`
+	Model            string    `json:"model"`
+	APIKeyEncrypted  string    `json:"-" gorm:"type:text"`
+	HeadersEncrypted string    `json:"-" gorm:"type:text"`
+	TimeoutSeconds   int       `json:"timeout_seconds"`
+	Enabled          bool      `json:"enabled"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+type AIConversation struct {
+	ID             uint        `json:"id" gorm:"primaryKey"`
+	UserID         uint        `json:"-" gorm:"index;not null"`
+	ProjectID      uint        `json:"project_id" gorm:"index;not null"`
+	WorkflowID     *uint       `json:"workflow_id" gorm:"index"`
+	ProviderID     uint        `json:"provider_id"`
+	Title          string      `json:"title"`
+	CanvasSnapshot string      `json:"canvas_snapshot" gorm:"type:text"`
+	CanvasRevision int64       `json:"canvas_revision"`
+	Generating     bool        `json:"generating"`
+	LastActiveAt   time.Time   `json:"last_active_at"`
+	CreatedAt      time.Time   `json:"created_at"`
+	UpdatedAt      time.Time   `json:"updated_at"`
+	Messages       []AIMessage `json:"messages,omitempty" gorm:"foreignKey:ConversationID"`
+}
+type AIMessage struct {
+	ID             uint      `json:"id" gorm:"primaryKey"`
+	ConversationID uint      `json:"conversation_id" gorm:"index;not null"`
+	Role           string    `json:"role"`
+	Content        string    `json:"content" gorm:"type:text"`
+	ToolCalls      string    `json:"tool_calls,omitempty" gorm:"type:text"`
+	ToolResults    string    `json:"tool_results,omitempty" gorm:"type:text"`
+	Operations     string    `json:"operations,omitempty" gorm:"type:text"`
+	Status         string    `json:"status"`
+	ErrorSummary   string    `json:"error_summary,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 type WorkflowLock struct {
 	ID         uint `gorm:"primaryKey"`

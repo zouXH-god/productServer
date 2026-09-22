@@ -29,6 +29,7 @@ func main() {
 		log.Fatal(err)
 	}
 	go app.dispatchReleaseEvents()
+	go app.dispatchSchedules()
 	log.Printf("product server listening on %s", cfg.HTTPAddr)
 	if err := app.router.Run(cfg.HTTPAddr); err != nil {
 		log.Fatal(err)

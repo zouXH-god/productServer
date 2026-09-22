@@ -12,6 +12,8 @@ type dashboardProject struct {
 	WorkflowCount int64     `json:"workflow_count"`
 	LatestVersion string    `json:"latest_version"`
 	LastActivity  time.Time `json:"last_activity"`
+	Type          string    `json:"type"`
+	Role          string    `json:"role"`
 }
 type dashboardRun struct {
 	ID             uint       `json:"id"`
@@ -25,12 +27,24 @@ type dashboardRun struct {
 	FinishedAt     *time.Time `json:"finished_at"`
 	NodeCount      int64      `json:"node_count"`
 	CompletedNodes int64      `json:"completed_nodes"`
+	TriggerSource  string     `json:"trigger_source"`
+	ScheduledFor   *time.Time `json:"scheduled_for,omitempty"`
 }
 
 func (a *App) dashboard(c *gin.Context) {
 	uid := c.MustGet("userID").(uint)
+	var members []ProjectMember
+	a.db.Where("user_id=?", uid).Find(&members)
+	memberIDs := []uint{}
+	roles := map[uint]string{}
+	for _, m := range members {
+		memberIDs = append(memberIDs, m.ProjectID)
+		roles[m.ProjectID] = m.Role
+	}
 	var projects []Project
-	a.db.Where("user_id=?", uid).Order("id desc").Find(&projects)
+	if len(memberIDs) > 0 {
+		a.db.Where("id IN ?", memberIDs).Order("id desc").Find(&projects)
+	}
 	summaries := make([]dashboardProject, 0, len(projects))
 	var releases, workflows, running, failed int64
 	for _, p := range projects {
@@ -43,7 +57,7 @@ func (a *App) dashboard(c *gin.Context) {
 		if !latest.CreatedAt.IsZero() {
 			activity = latest.CreatedAt
 		}
-		summaries = append(summaries, dashboardProject{p.ID, p.Name, rc, wc, latest.Version, activity})
+		summaries = append(summaries, dashboardProject{ID: p.ID, Name: p.Name, ReleaseCount: rc, WorkflowCount: wc, LatestVersion: latest.Version, LastActivity: activity, Type: p.Type, Role: roles[p.ID]})
 		releases += rc
 		workflows += wc
 	}
@@ -65,17 +79,28 @@ func (a *App) dashboard(c *gin.Context) {
 			a.db.First(&p, r.ProjectID)
 			a.db.First(&w, r.WorkflowID)
 			a.db.First(&rel, r.ReleaseID)
+			if rel.Version == "" {
+				rel.Version = r.DisplayVersion
+			}
 			a.db.Model(&WorkflowNodeRun{}).Where("run_id=?", r.ID).Count(&total)
 			a.db.Model(&WorkflowNodeRun{}).Where("run_id=? AND status IN ?", r.ID, []string{"succeeded", "failed", "cancelled"}).Count(&done)
-			runs = append(runs, dashboardRun{r.ID, r.ProjectID, p.Name, w.Name, rel.Version, r.Status, r.CreatedAt, r.StartedAt, r.FinishedAt, total, done})
+			runs = append(runs, dashboardRun{r.ID, r.ProjectID, p.Name, w.Name, rel.Version, r.Status, r.CreatedAt, r.StartedAt, r.FinishedAt, total, done, r.TriggerSource, r.ScheduledFor})
 		}
 	}
 	c.JSON(200, gin.H{"stats": gin.H{"projects": len(projects), "releases": releases, "workflows": workflows, "running": running, "failed": failed}, "projects": summaries, "runs": runs})
 }
 func (a *App) allRuns(c *gin.Context) {
 	uid := c.MustGet("userID").(uint)
+	var memberships []ProjectMember
+	a.db.Where("user_id=?", uid).Find(&memberships)
+	memberIDs := []uint{}
+	for _, m := range memberships {
+		memberIDs = append(memberIDs, m.ProjectID)
+	}
 	var projects []Project
-	a.db.Where("user_id=?", uid).Find(&projects)
+	if len(memberIDs) > 0 {
+		a.db.Where("id IN ?", memberIDs).Find(&projects)
+	}
 	ids := []uint{}
 	for _, p := range projects {
 		ids = append(ids, p.ID)
@@ -99,9 +124,12 @@ func (a *App) allRuns(c *gin.Context) {
 		a.db.First(&p, r.ProjectID)
 		a.db.First(&w, r.WorkflowID)
 		a.db.First(&rel, r.ReleaseID)
+		if rel.Version == "" {
+			rel.Version = r.DisplayVersion
+		}
 		a.db.Model(&WorkflowNodeRun{}).Where("run_id=?", r.ID).Count(&total)
 		a.db.Model(&WorkflowNodeRun{}).Where("run_id=? AND status IN ?", r.ID, []string{"succeeded", "failed", "cancelled"}).Count(&done)
-		runs = append(runs, dashboardRun{r.ID, r.ProjectID, p.Name, w.Name, rel.Version, r.Status, r.CreatedAt, r.StartedAt, r.FinishedAt, total, done})
+		runs = append(runs, dashboardRun{r.ID, r.ProjectID, p.Name, w.Name, rel.Version, r.Status, r.CreatedAt, r.StartedAt, r.FinishedAt, total, done, r.TriggerSource, r.ScheduledFor})
 	}
 	c.JSON(200, runs)
 }

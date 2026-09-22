@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -20,6 +21,7 @@ func (a *App) dispatchReleaseEvents() {
 		var events []ReleaseEvent
 		a.db.Where("processed_at IS NULL").Limit(20).Find(&events)
 		for _, event := range events {
+			complete := true
 			var r Release
 			if a.db.First(&r, event.ReleaseID).Error != nil {
 				continue
@@ -28,11 +30,19 @@ func (a *App) dispatchReleaseEvents() {
 			a.db.Where("project_id=? AND enabled=?", r.ProjectID, true).Find(&flows)
 			for _, w := range flows {
 				if triggerMatches(w, r) {
-					_, _ = createRun(a.db, a.cfg, w, r)
+					var count int64
+					a.db.Model(&WorkflowRun{}).Where("workflow_id=? AND release_id=?", w.ID, r.ID).Count(&count)
+					if count == 0 {
+						if _, err := createRun(a.db, a.cfg, w, r); err != nil {
+							complete = false
+						}
+					}
 				}
 			}
-			now := time.Now()
-			a.db.Model(&event).Update("processed_at", now)
+			if complete {
+				now := time.Now()
+				a.db.Model(&event).Update("processed_at", now)
+			}
 		}
 	}
 }
@@ -51,7 +61,18 @@ func triggerMatches(w Workflow, r Release) bool {
 	return false
 }
 func createRun(db *gorm.DB, cfg Config, w Workflow, r Release) (WorkflowRun, error) {
-	run := WorkflowRun{ProjectID: r.ProjectID, WorkflowID: w.ID, ReleaseID: r.ID, Status: "queued", Snapshot: w.Definition}
+	return createArtifactRun(db, cfg, w, r, "artifact")
+}
+func createArtifactRun(db *gorm.DB, cfg Config, w Workflow, r Release, source string) (WorkflowRun, error) {
+	var project Project
+	if err := db.First(&project, r.ProjectID).Error; err != nil {
+		return WorkflowRun{}, err
+	}
+	environment, err := buildEnvironmentSnapshot(db, cfg, project.UserID, r.ProjectID)
+	if err != nil {
+		return WorkflowRun{}, err
+	}
+	run := WorkflowRun{ProjectID: r.ProjectID, WorkflowID: w.ID, ReleaseID: r.ID, Status: "queued", Snapshot: w.Definition, EnvironmentSnapshot: environment, TriggerSource: source, DisplayVersion: r.Version}
 	e := db.Create(&run).Error
 	if e == nil {
 		run.LogPath = filepath.Join(cfg.WorkflowLogDir, fmt.Sprintf("run-%d.jsonl", run.ID))
@@ -88,7 +109,7 @@ func runWorker(db *gorm.DB, cfg Config) error {
 			time.Sleep(time.Second)
 			continue
 		}
-		executeRun(db, cfg, worker, run)
+		executeRunV2(db, cfg, worker, run)
 	}
 }
 func hostname() string { h, _ := os.Hostname(); return h }
@@ -97,10 +118,12 @@ func claimRun(db *gorm.DB, cfg Config, worker string) (WorkflowRun, bool) {
 	db.Where("status='queued' OR (status='running' AND lease_until < ?)", time.Now()).Order("id").Limit(10).Find(&list)
 	for _, r := range list {
 		until := time.Now().Add(cfg.WorkerLease)
-		lock := WorkflowLock{ProjectID: r.ProjectID, WorkflowID: r.WorkflowID, RunID: r.ID, LeaseUntil: until}
-		db.Where("project_id=? AND workflow_id=? AND lease_until < ?", r.ProjectID, r.WorkflowID, time.Now()).Delete(&WorkflowLock{})
-		if db.Create(&lock).Error != nil {
-			continue
+		if !r.AllowParallel {
+			lock := WorkflowLock{ProjectID: r.ProjectID, WorkflowID: r.WorkflowID, RunID: r.ID, LeaseUntil: until}
+			db.Where("project_id=? AND workflow_id=? AND lease_until < ?", r.ProjectID, r.WorkflowID, time.Now()).Delete(&WorkflowLock{})
+			if db.Create(&lock).Error != nil {
+				continue
+			}
 		}
 		res := db.Model(&WorkflowRun{}).Where("id=? AND (status='queued' OR lease_until < ?)", r.ID, time.Now()).Updates(map[string]any{"status": "running", "worker_id": worker, "lease_until": until, "started_at": time.Now()})
 		if res.RowsAffected == 1 {
@@ -109,21 +132,29 @@ func claimRun(db *gorm.DB, cfg Config, worker string) (WorkflowRun, bool) {
 			r.LeaseUntil = &until
 			return r, true
 		}
-		db.Where("run_id=?", r.ID).Delete(&WorkflowLock{})
+		if !r.AllowParallel {
+			db.Where("run_id=?", r.ID).Delete(&WorkflowLock{})
+		}
 	}
 	return WorkflowRun{}, false
 }
 
 type runLogger struct {
-	mu    sync.Mutex
-	path  string
-	db    *gorm.DB
-	runID uint
+	mu      sync.Mutex
+	path    string
+	db      *gorm.DB
+	runID   uint
+	secrets []string
 }
 
 func (l *runLogger) write(node, stream, msg string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	for _, secret := range l.secrets {
+		if secret != "" {
+			msg = strings.ReplaceAll(msg, secret, "***")
+		}
+	}
 	_ = os.MkdirAll(filepath.Dir(l.path), 0755)
 	f, e := os.OpenFile(l.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if e != nil {
@@ -301,7 +332,7 @@ func executeNode(parent context.Context, db *gorm.DB, cfg Config, run WorkflowRu
 		now := time.Now()
 		db.Model(&nr).Updates(map[string]any{"status": "running", "attempts": attempt, "started_at": now})
 		log.write(n.ID, "system", fmt.Sprintf("starting %s attempt %d", n.Type, attempt))
-		e := executeModule(ctx, db, cfg, run, p, r, n, input, work, log)
+		_, _, e := executeModule(ctx, db, cfg, run, p, r, n, input, work, log)
 		cancel()
 		if e == nil {
 			now = time.Now()

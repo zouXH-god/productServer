@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http/httptest"
@@ -65,6 +66,127 @@ func loginToken(t *testing.T, a *App) string {
 	}
 	_ = json.Unmarshal(w.Body.Bytes(), &out)
 	return out.Token
+}
+func loginAs(t *testing.T, a *App, username, password string) string {
+	t.Helper()
+	w := request(t, a, "POST", "/api/auth/login", bytes.NewBufferString(fmt.Sprintf(`{"username":%q,"password":%q}`, username, password)), map[string]string{"Content-Type": "application/json"})
+	if w.Code != 200 {
+		t.Fatalf("login %s: %d %s", username, w.Code, w.Body.String())
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &out)
+	return out.Token
+}
+
+func TestRegistrationJWTRevocationAndProjectMembership(t *testing.T) {
+	a, _ := testApp(t)
+	w := request(t, a, "POST", "/api/auth/register", bytes.NewBufferString(`{"username":"developer","email":"dev@example.com","password":"password123"}`), map[string]string{"Content-Type": "application/json"})
+	if w.Code != 201 {
+		t.Fatalf("register: %d %s", w.Code, w.Body.String())
+	}
+	developerToken := loginAs(t, a, "developer", "password123")
+	adminToken := loginToken(t, a)
+	w = request(t, a, "POST", "/api/projects", bytes.NewBufferString(`{"name":"timer","type":"scheduled"}`), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + adminToken})
+	if w.Code != 201 {
+		t.Fatalf("project: %d %s", w.Code, w.Body.String())
+	}
+	var project struct {
+		ID    uint   `json:"id"`
+		Token string `json:"token"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &project)
+	if project.Token != "" {
+		t.Fatal("scheduled project returned a token")
+	}
+	w = request(t, a, "POST", fmt.Sprintf("/api/projects/%d/members", project.ID), bytes.NewBufferString(`{"username":"developer","role":"developer"}`), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + adminToken})
+	if w.Code != 201 {
+		t.Fatalf("member: %d %s", w.Code, w.Body.String())
+	}
+	w = request(t, a, "GET", fmt.Sprintf("/api/projects/%d", project.ID), nil, map[string]string{"Authorization": "Bearer " + developerToken})
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"role":"developer"`) {
+		t.Fatalf("member access: %d %s", w.Code, w.Body.String())
+	}
+	w = request(t, a, "DELETE", fmt.Sprintf("/api/projects/%d", project.ID), nil, map[string]string{"Authorization": "Bearer " + developerToken})
+	if w.Code != 403 {
+		t.Fatalf("developer deleted project: %d", w.Code)
+	}
+	var developer User
+	a.db.Where("username=?", "developer").First(&developer)
+	a.db.Model(&developer).Update("token_version", gorm.Expr("token_version + 1"))
+	w = request(t, a, "GET", "/api/auth/me", nil, map[string]string{"Authorization": "Bearer " + developerToken})
+	if w.Code != 401 {
+		t.Fatalf("revoked JWT status=%d", w.Code)
+	}
+}
+
+func TestAIProviderEncryptionAndCanvasTools(t *testing.T) {
+	a, _ := testApp(t)
+	a.cfg.SecretEncryptionKey = "12345678901234567890123456789012"
+	token := loginToken(t, a)
+	body := `{"name":"local","base_url":"http://127.0.0.1:11434","model":"test","api_key":"secret-key","timeout_seconds":30,"enabled":true}`
+	w := request(t, a, "POST", "/api/ai/providers", bytes.NewBufferString(body), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token})
+	if w.Code != 201 {
+		t.Fatalf("provider status=%d body=%s", w.Code, w.Body.String())
+	}
+	var provider AIProvider
+	if err := a.db.First(&provider).Error; err != nil {
+		t.Fatal(err)
+	}
+	if provider.APIKeyEncrypted == "secret-key" || provider.APIKeyEncrypted == "" {
+		t.Fatal("API key was not encrypted")
+	}
+	canvas := WorkflowDefinition{Nodes: []WorkflowNode{{ID: "a", Type: "ssh_command", Config: map[string]any{}}}}
+	_, ops, err := a.toolContext(1, 1, "add_node", map[string]any{"node": map[string]any{"id": "b", "type": "http_webhook", "config": map[string]any{"url": "https://example.com/hook"}}}, &canvas)
+	if err != nil || len(ops) != 1 || len(canvas.Nodes) != 2 {
+		t.Fatalf("ops=%v canvas=%v err=%v", ops, canvas, err)
+	}
+	_, _, err = a.toolContext(1, 1, "add_edge", map[string]any{"edge": map[string]any{"from": "a", "to": "b", "condition": "success"}}, &canvas)
+	if err != nil || len(canvas.Edges) != 1 {
+		t.Fatalf("edge err=%v canvas=%v", err, canvas)
+	}
+	_, _, err = a.toolContext(1, 1, "add_edge", map[string]any{"edge": map[string]any{"from": "b", "to": "a", "condition": "success"}}, &canvas)
+	if err == nil {
+		t.Fatal("AI tool accepted a cyclic edge")
+	}
+}
+
+func TestOpenAIToolCallRoundTripUsesCompatibleFieldNames(t *testing.T) {
+	var response chatResponse
+	raw := `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_canvas","arguments":"{}"}}]}}]}`
+	if err := json.Unmarshal([]byte(raw), &response); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(map[string]any{"role": "assistant", "tool_calls": response.Choices[0].Message.ToolCalls})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	if !strings.Contains(text, `"id":"call_1"`) || !strings.Contains(text, `"function":{"name":"get_canvas"`) || strings.Contains(text, `"ID"`) {
+		t.Fatalf("incompatible tool call JSON: %s", text)
+	}
+}
+
+func TestNormalizeAIGeneratedWorkflow(t *testing.T) {
+	d := WorkflowDefinition{Nodes: []WorkflowNode{
+		{ID: "upload", Type: "sftp_upload", Config: map[string]any{"connection_id": 1, "local_path": "${release.artifact}", "remote_dir": "/root/test"}},
+		{ID: "extract", Type: "extract", Config: map[string]any{"connection_id": 1, "archive_dir": "/root/test", "target_dir": "/root/test"}},
+		{ID: "run", Type: "ssh_command", Config: map[string]any{"connection_id": 1, "command": "bash start.sh"}},
+	}, Edges: []WorkflowEdge{{From: "upload", To: "extract"}, {From: "extract", To: "run"}}}
+	if !normalizeWorkflowDefinition(&d) {
+		t.Fatal("generated workflow was not normalized")
+	}
+	if len(d.Nodes) != 2 || d.Nodes[0].Type != "sftp_extract" || d.Nodes[0].Config["destination"] != "/root/test" {
+		t.Fatalf("nodes=%#v", d.Nodes)
+	}
+	commands, ok := d.Nodes[1].Config["commands"].([]any)
+	if !ok || len(commands) != 1 {
+		t.Fatalf("commands=%#v", d.Nodes[1].Config["commands"])
+	}
+	if len(d.Edges) != 1 || d.Edges[0].From != "upload" || d.Edges[0].To != "run" {
+		t.Fatalf("edges=%#v", d.Edges)
+	}
 }
 func createProjectAndToken(t *testing.T, a *App, jwt string) (uint, string) {
 	t.Helper()

@@ -1,0 +1,1 @@
+<script setup lang="ts">import EnvironmentVariables from'../components/EnvironmentVariables.vue'</script><template><div class="page-heading"><div><span class="eyebrow">运行配置</span><h1>环境变量</h1><p>管理所有项目共享的普通配置与加密密钥。</p></div></div><EnvironmentVariables/></template>

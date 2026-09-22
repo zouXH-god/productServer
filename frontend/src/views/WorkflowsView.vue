@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // @ts-nocheck
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { useRoute } from "vue-router";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { Handle, Position, VueFlow, useVueFlow } from "@vue-flow/core";
 import "@vue-flow/core/dist/style.css";
 import "@vue-flow/core/dist/theme-default.css";
@@ -9,6 +9,7 @@ import {
   Archive,
   FolderOpen,
   UploadCloud,
+  PackageOpen,
   Terminal,
   Webhook,
   ShieldCheck,
@@ -23,13 +24,21 @@ import {
   ArrowLeft,
   Workflow as WorkflowIcon,
   Eye,
-  File,
+  GitBranch,
+  Split,
+  Repeat2,
+  CircleStop,
+  FileSearch,
+  ServerCog,
+  CalendarClock,
 } from "lucide-vue-next";
 import { api } from "../api";
 import Modal from "../components/Modal.vue";
 import Drawer from "../components/Drawer.vue";
 import StatusBadge from "../components/StatusBadge.vue";
 import EmptyState from "../components/EmptyState.vue";
+import FileTree from "../components/FileTree.vue";
+import AIChatPanel from "../components/AIChatPanel.vue";
 const pid = Number(useRoute().params.id),
   flows = ref<any[]>([]),
   runs = ref<any[]>([]),
@@ -43,6 +52,7 @@ const pid = Number(useRoute().params.id),
   nodes = ref<any[]>([]),
   edges = ref<any[]>([]),
   selected = ref<any>(),
+  selectedEdge = ref<any>(),
   createOpen = ref(false),
   runOpen = ref(false),
   releaseID = ref(0),
@@ -53,6 +63,9 @@ const pid = Number(useRoute().params.id),
   history = ref<string[]>([]),
   future = ref<string[]>([]),
   error = ref("");
+const project=ref<any>(),scheduleOpen=ref(false),scheduleFlow=ref<any>(),scheduleForm=ref({cron:"0 * * * *",timezone:"Asia/Shanghai",enabled:true,allow_parallel:false});
+const canDevelop=computed(()=>['owner','admin','developer'].includes(project.value?.role));
+const router = useRouter();
 const { addEdges, fitView } = useVueFlow();
 const modules: any = {
   archive: {
@@ -77,6 +90,17 @@ const modules: any = {
       destination: "/tmp/artifacts",
     },
   },
+  sftp_extract: {
+    name: "上传并解压",
+    desc: "上传 Action 的唯一压缩包并在服务器解压",
+    icon: PackageOpen,
+    defaults: {
+      connection_id: 0,
+      destination: "/opt/application",
+      permission: "0755",
+      keep_archive: false,
+    },
+  },
   ssh_command: {
     name: "SSH 命令",
     desc: "在远程主机执行命令",
@@ -99,16 +123,29 @@ const modules: any = {
     icon: ShieldCheck,
     defaults: { file_pattern: "", algorithm: "sha256", expected: "" },
   },
+  remote_file_exists:{name:"远端文件存在",desc:"判断服务器上是否存在指定文件",icon:FileSearch,category:"判断",defaults:{connection_id:0,path:"/opt/application/current"}},
+  value_match:{name:"值匹配",desc:"判断模板值或上游输出是否匹配",icon:GitBranch,category:"判断",defaults:{actual:"",operator:"equals",expected:"",ignore_case:false}},
+  string_split:{name:"字符串分割",desc:"将字符串派生为列表",icon:Split,category:"数据派生",defaults:{value:"",separator:",",regex:false,trim:true,drop_empty:true}},
+  foreach:{name:"列表循环",desc:"按列表项重复执行循环子图",icon:Repeat2,category:"流程控制",defaults:{items_from:"",mode:"parallel",concurrency:4,end_node_id:""}},
+  loop_end:{name:"循环结束",desc:"汇总每次循环的节点输出",icon:CircleStop,category:"流程控制",defaults:{}},
+  server_list:{name:"服务器列表",desc:"选择多台服务器并批量执行范围内任务",icon:ServerCog,category:"流程控制",defaults:{connection_ids:[],mode:"parallel",concurrency:4,end_node_id:""}},
+  server_list_end:{name:"服务器列表结束",desc:"汇总每台服务器的状态与节点输出",icon:CircleStop,category:"流程控制",defaults:{}},
 };
-async function load() {
-  [flows.value, runs.value, releases.value, connections.value] =
-    await Promise.all([
-      api(`/api/projects/${pid}/workflows`),
-      api(`/api/projects/${pid}/runs`),
-      api(`/api/projects/${pid}/releases`),
-      api("/api/ssh-connections"),
-    ]);
+for(const key of ["archive","extract","sftp_upload","sftp_extract","checksum_verify"])modules[key].category="文件操作";for(const key of ["ssh_command","http_webhook"])modules[key].category="信息交互";
+const moduleGroups=computed(()=>["文件操作","流程控制","判断","数据派生","信息交互"].map(category=>({category,items:Object.entries(modules).filter(([,m]:any)=>m.category===category)})));
+function normalizeNodeConfig(type:string, source:any) {
+  const c={...(source||{})};
+  if(type==="sftp_upload"){if(c.destination===undefined)c.destination=c.remote_dir;if(c.file_pattern===undefined)c.file_pattern=c.local_path;}
+  if(type==="extract"){if(c.output===undefined)c.output=c.target_dir;if(c.file_pattern===undefined)c.file_pattern=c.archive_dir;}
+  if(type==="ssh_command"){if(!Array.isArray(c.commands)&&c.command)c.commands=[c.command];if(c.work_dir===undefined)c.work_dir=c.workdir||"";}
+  return {...(modules[type]?.defaults||{}),...c};
 }
+async function load() {
+  project.value=await api(`/api/projects/${pid}`);[flows.value,runs.value,connections.value]=await Promise.all([api(`/api/projects/${pid}/workflows`),api(`/api/projects/${pid}/runs`),api(`/api/ssh-connections?project_id=${pid}`)]);releases.value=project.value.type==='artifact'?await api(`/api/projects/${pid}/releases`):[];
+}
+function configureSchedule(flow:any){scheduleFlow.value=flow;const s=flow.schedule;scheduleForm.value={cron:s?.cron||"0 * * * *",timezone:s?.timezone||"Asia/Shanghai",enabled:s?.enabled??true,allow_parallel:s?.allow_parallel??false};scheduleOpen.value=true}
+async function saveSchedule(){await api(`/api/projects/${pid}/workflows/${scheduleFlow.value.id}/schedule`,{method:'PUT',body:JSON.stringify(scheduleForm.value)});scheduleOpen.value=false;await load()}
+async function triggerNow(){await api(`/api/projects/${pid}/workflows/${scheduleFlow.value.id}/schedule/trigger`,{method:'POST'});scheduleOpen.value=false;await load()}
 async function loadPreview() {
   if (!previewReleaseID.value) {
     previewFiles.value = [];
@@ -141,6 +178,10 @@ const supportsPattern = computed(() =>
     selected.value?.data?.module,
   ),
 );
+function selectExactFile(file: any) {
+  const escaped = file.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  selected.value.data.config.file_pattern = `^${escaped}$`;
+}
 function snapshot() {
   return JSON.stringify({ nodes: nodes.value, edges: edges.value });
 }
@@ -168,13 +209,34 @@ function add(type: string) {
       retries: 0,
     },
   });
+  if(type==="foreach"||type==="server_list"){
+    const endType=type==="foreach"?"loop_end":"server_list_end";
+    const endID=`${endType}_${Date.now()+1}`;nodes.value[nodes.value.length-1].data.config.end_node_id=endID;
+    nodes.value.push({id:endID,label:modules[endType].name,position:{x:330+(nodes.value.length%3)*30,y:180+nodes.value.length*20},data:{module:endType,config:{start_node_id:id},timeout_seconds:600,retries:0}});
+    edges.value.push({id:`e_${Date.now()}`,source:id,target:endID,condition:"success"});
+  }
 }
 function connect(e: any) {
   checkpoint();
-  addEdges([{ ...e, id: `e_${Date.now()}` }]);
+  const condition=["true","false"].includes(e.sourceHandle)?e.sourceHandle:"success";addEdges([{ ...e, condition, label:condition==="success"?"":condition, id: `e_${Date.now()}` }]);
 }
 function choose(e: any) {
+  selectedEdge.value = undefined;
+  edges.value = edges.value.map((edge) => ({ ...edge, selected: false }));
   selected.value = e.node;
+}
+function chooseEdge(e: any) {
+  selected.value = undefined;
+  selectedEdge.value = e.edge;
+  edges.value = edges.value.map((edge) => ({
+    ...edge,
+    selected: edge.id === e.edge.id,
+  }));
+}
+function clearSelection() {
+  selected.value = undefined;
+  selectedEdge.value = undefined;
+  edges.value = edges.value.map((edge) => ({ ...edge, selected: false }));
 }
 function restore(raw: string) {
   const x = JSON.parse(raw);
@@ -195,13 +257,21 @@ function redo() {
   saved.value = false;
 }
 function removeSelected() {
-  if (!selected.value) return;
+  if (!selected.value && !selectedEdge.value) return;
   checkpoint();
-  nodes.value = nodes.value.filter((n) => n.id !== selected.value.id);
-  edges.value = edges.value.filter(
-    (e) => e.source !== selected.value.id && e.target !== selected.value.id,
-  );
-  selected.value = undefined;
+  if (selectedEdge.value) {
+    edges.value = edges.value.filter((e) => e.id !== selectedEdge.value.id);
+  } else {
+    const nodeID = selected.value.id, removeIDs=new Set([nodeID]);
+    if(["foreach","server_list"].includes(selected.value.data.module)&&selected.value.data.config.end_node_id)removeIDs.add(selected.value.data.config.end_node_id);
+    if(["loop_end","server_list_end"].includes(selected.value.data.module)&&selected.value.data.config.start_node_id)removeIDs.add(selected.value.data.config.start_node_id);
+    nodes.value = nodes.value.filter((n) => !removeIDs.has(n.id));
+    edges.value = edges.value.filter(
+      (e) => !removeIDs.has(e.source) && !removeIDs.has(e.target),
+    );
+  }
+  clearSelection();
+  saved.value = false;
 }
 function duplicate() {
   if (!selected.value) return;
@@ -242,7 +312,7 @@ async function edit(id: number) {
     position: n.position || { x: 100, y: 100 },
     data: {
       module: n.type,
-      config: n.config || {},
+      config: normalizeNodeConfig(n.type,n.config),
       timeout_seconds: n.timeout_seconds,
       retries: n.retries,
     },
@@ -251,6 +321,8 @@ async function edit(id: number) {
     id: `e${i}`,
     source: e.from,
     target: e.to,
+    condition:e.condition||"success",
+    label:e.condition&&e.condition!=="success"?e.condition:"",
   }));
   history.value = [];
   future.value = [];
@@ -271,7 +343,7 @@ async function save() {
       retries: n.data.retries,
       position: n.position,
     })),
-    edges: edges.value.map((e) => ({ from: e.source, to: e.target })),
+    edges: edges.value.map((e) => ({ from: e.source, to: e.target, condition:e.condition||"success" })),
   };
   try {
     const w = await api<any>(
@@ -297,12 +369,12 @@ async function save() {
   }
 }
 async function run() {
-  await api(`/api/projects/${pid}/workflows/${editing.value}/runs`, {
+  const created = await api<any>(`/api/projects/${pid}/workflows/${editing.value}/runs`, {
     method: "POST",
     body: JSON.stringify({ release_id: releaseID.value }),
   });
   runOpen.value = false;
-  await load();
+  await router.push({path:"/runs",query:{project:String(pid),run:String(created.id)}});
 }
 function inputFocus() {
   return ["INPUT", "TEXTAREA", "SELECT"].includes(
@@ -316,6 +388,8 @@ function key(e: KeyboardEvent) {
     save();
     return;
   }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "j") { e.preventDefault(); window.dispatchEvent(new Event("ai-toggle")); return; }
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "n") { e.preventDefault(); window.dispatchEvent(new Event("ai-new")); return; }
   if (inputFocus()) return;
   if (["Delete", "Backspace"].includes(e.key)) {
     e.preventDefault();
@@ -338,7 +412,26 @@ onUnmounted(() => document.removeEventListener("keydown", key));
 const moduleInfo = computed(() =>
   selected.value ? modules[selected.value.data.module] : null,
 );
+function serverScopeFor(nodeID:string){
+  for(const start of nodes.value.filter((n:any)=>n.data.module==="server_list")){
+    const end=start.data.config.end_node_id, seen=new Set<string>(), queue=edges.value.filter((e:any)=>e.source===start.id).map((e:any)=>e.target);
+    while(queue.length){const id=queue.shift();if(!id||id===end||seen.has(id))continue;seen.add(id);for(const e of edges.value.filter((x:any)=>x.source===id))queue.push(e.target)}
+    if(seen.has(nodeID))return start;
+  }
+  return undefined;
+}
+const selectedServerScope = computed(()=>selected.value?serverScopeFor(selected.value.id):undefined);
+const canvasDefinition = computed(() => ({
+  nodes: nodes.value.map((n) => ({ id:n.id, type:n.data.module, config:n.data.config, timeout_seconds:n.data.timeout_seconds, retries:n.data.retries, position:n.position })),
+  edges: edges.value.map((e) => ({ from:e.source, to:e.target, condition:e.condition||"success" })),
+}));
+function applyAICanvas(canvas:any){
+  nodes.value=(canvas.nodes||[]).map((n:any)=>({id:n.id,label:modules[n.type]?.name||n.type,position:n.position||{x:100,y:100},data:{module:n.type,config:normalizeNodeConfig(n.type,n.config),timeout_seconds:n.timeout_seconds||600,retries:n.retries||0}}));
+  edges.value=(canvas.edges||[]).map((e:any,i:number)=>({id:`ai_e_${i}_${Date.now()}`,source:e.from,target:e.to,condition:e.condition||"success",label:e.condition&&e.condition!=="success"?e.condition:""}));
+  saved.value=false; nextTick(()=>fitView({padding:.2}));
+}
 function triggerLabel(w: any) {
+	if(project.value?.type==='scheduled')return w.schedule?.enabled?`${w.schedule.cron} · ${w.schedule.timezone}`:'未配置或未启用计划';
   return (
     (
       {
@@ -359,7 +452,7 @@ function triggerLabel(w: any) {
         <h1>工作流</h1>
         <p>通过可视化模块编排产物发布后的自动操作。</p>
       </div>
-      <button class="btn" @click="beginCreate"><Plus />新建工作流</button>
+	  <button v-if="canDevelop" class="btn" @click="beginCreate"><Plus />新建工作流</button>
     </div>
     <div class="workflow-cards">
       <article
@@ -378,7 +471,7 @@ function triggerLabel(w: any) {
             />
           </div>
           <p>{{ triggerLabel(f) }}</p>
-          <small>更新于 {{ new Date(f.updated_at).toLocaleString() }}</small>
+		  <small v-if="project?.type==='scheduled'&&f.schedule?.next_run_at">下次 {{new Date(f.schedule.next_run_at).toLocaleString()}} · 最近 {{f.last_schedule_event?.status||'尚未触发'}}</small><small v-else>更新于 {{ new Date(f.updated_at).toLocaleString() }}</small><button v-if="project?.type==='scheduled'&&canDevelop" class="btn secondary small-btn" @click.stop="configureSchedule(f)"><CalendarClock/>定时设置</button>
         </div>
       </article>
       <EmptyState
@@ -422,7 +515,7 @@ function triggerLabel(w: any) {
       <label class="switch"
         ><input v-model="enabled" type="checkbox" />启用</label
       >
-      <div class="release-preview-control">
+	  <div v-if="project?.type==='artifact'" class="release-preview-control">
         <select v-model.number="previewReleaseID" @change="loadPreview">
           <option :value="0">选择预览版本</option>
           <option
@@ -465,24 +558,20 @@ function triggerLabel(w: any) {
           <Maximize />
         </button>
       </div>
-      <button v-if="editing" class="btn secondary" @click="runOpen = true">
+	  <button v-if="editing&&canDevelop" class="btn secondary" @click="runOpen = true">
         <Play />运行</button
-      ><button class="btn" @click="save"><Save />保存</button>
+	  ><button v-if="canDevelop" class="btn" @click="save"><Save />保存</button>
     </header>
     <p v-if="error" class="editor-error">{{ error }}</p>
     <div class="editor-body">
-      <aside class="module-palette">
-        <span class="eyebrow">模块</span
-        ><button
-          v-for="(m, type) in modules"
-          :key="type"
-          @click="add(type as string)"
-        >
-          <component :is="m.icon" /><span
-            ><b>{{ m.name }}</b
-            ><small>{{ m.desc }}</small></span
-          ><Plus />
-        </button>
+	  <aside v-if="canDevelop" class="module-palette">
+        <span class="eyebrow">模块</span>
+        <details v-for="group in moduleGroups" :key="group.category" open class="module-group">
+          <summary>{{group.category}} <small>{{group.items.length}}</small></summary>
+          <div class="module-grid">
+            <button v-for="entry in group.items" :key="entry[0] as string" :title="(entry[1] as any).desc" @click="add(entry[0] as string)"><span class="module-icon"><component :is="(entry[1] as any).icon"/></span><span><b>{{(entry[1] as any).name}}</b><small>{{(entry[1] as any).desc}}</small></span></button>
+          </div>
+        </details>
       </aside>
       <div class="flow-canvas">
         <VueFlow
@@ -491,9 +580,10 @@ function triggerLabel(w: any) {
           fit-view-on-init
           @connect="connect"
           @node-click="choose"
-          @pane-click="selected = undefined"
+          @edge-click="chooseEdge"
+          @pane-click="clearSelection"
           ><template #node-default="p"
-            ><div class="flow-node" :class="{ selected: p.selected }">
+            ><div class="flow-node" :class="{ selected: p.selected, 'server-scoped':!!serverScopeFor(p.id) }">
               <Handle
                 id="input"
                 type="target"
@@ -503,18 +593,16 @@ function triggerLabel(w: any) {
               <component :is="modules[p.data.module]?.icon" />
               <div>
                 <b>{{ modules[p.data.module]?.name }}</b
-                ><small>{{ p.id }}</small>
+                ><small v-if="p.data.module==='server_list'">{{p.data.config.connection_ids?.length||0}} 台 · {{p.data.config.mode==='sequential'?'串行':`并行 ${p.data.config.concurrency||4}`}}</small><small v-else>{{ p.id }}</small>
               </div>
-              <Handle
-                id="output"
-                type="source"
-                :position="Position.Right"
-                title="连接下一步"
-              /></div></template
+              <template v-if="['remote_file_exists','value_match'].includes(p.data.module)">
+                <Handle id="true" type="source" :position="Position.Right" style="top:35%" title="条件为真"/><Handle id="false" type="source" :position="Position.Right" style="top:68%" title="条件为假"/>
+              </template><Handle v-else id="output" type="source" :position="Position.Right" title="连接下一步"/></div></template
         ></VueFlow>
-        <div class="canvas-hint">拖动画布 · 滚轮缩放 · 点击节点配置</div>
+        <div class="canvas-hint">拖动画布 · 滚轮缩放 · 选中节点或连线后按 Delete 删除</div>
       </div>
     </div>
+    <AIChatPanel :project-id="pid" :workflow-id="editing||undefined" :workflow-name="name" :trigger-type="triggerType" :trigger-glob="triggerGlob" :canvas="canvasDefinition" @checkpoint="checkpoint" @apply="applyAICanvas" />
   </div>
   <Drawer v-model="previewOpen" title="版本文件预览">
     <div class="release-preview-summary">
@@ -524,16 +612,7 @@ function triggerLabel(w: any) {
       <span>{{ previewFiles.length }} 个文件</span>
     </div>
     <div class="preview-file-list">
-      <div v-for="file in previewFiles" :key="file.id" class="preview-file-row">
-        <File />
-        <div>
-          <b>{{ file.name }}</b>
-          <small
-            >{{ file.kind === "extracted" ? "解压文件" : "上传文件" }} ·
-            {{ file.size }} bytes</small
-          >
-        </div>
-      </div>
+      <FileTree :files="previewFiles" />
       <EmptyState v-if="!previewFiles.length" title="该版本没有文件" />
     </div>
   </Drawer>
@@ -546,6 +625,19 @@ function triggerLabel(w: any) {
       <label>节点 ID<input v-model="selected.id" /></label>
       <div v-if="supportsPattern" class="pattern-picker">
         <label>
+          预览版本
+          <select v-model.number="previewReleaseID" @change="loadPreview">
+            <option :value="0">选择一个发布版本</option>
+            <option
+              v-for="release in releases"
+              :key="release.id"
+              :value="release.id"
+            >
+              {{ release.version }}
+            </option>
+          </select>
+        </label>
+        <label>
           文件正则表达式
           <input
             v-model="selected.data.config.file_pattern"
@@ -553,7 +645,7 @@ function triggerLabel(w: any) {
           />
         </label>
         <p v-if="!previewReleaseID" class="pattern-tip">
-          请先在编辑器顶部选择一个版本，以实时预览匹配文件。
+          选择一个版本后，可实时预览正则表达式匹配的文件。
         </p>
         <p v-else-if="patternResult.error" class="error">
           正则表达式无效：{{ patternResult.error }}
@@ -562,16 +654,11 @@ function triggerLabel(w: any) {
           <div class="pattern-result-head">
             <span>实时匹配</span><b>{{ patternResult.files.length }} 个文件</b>
           </div>
-          <button
-            v-for="file in patternResult.files.slice(0, 20)"
-            :key="file.id"
-            type="button"
-            @click="
-              selected.data.config.file_pattern = `^${file.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`
-            "
-          >
-            <File />{{ file.name }}
-          </button>
+          <FileTree
+            :files="patternResult.files.slice(0, 100)"
+            action="select"
+            @select="selectExactFile"
+          />
           <small v-if="patternResult.files.length > 20">
             另有 {{ patternResult.files.length - 20 }} 个匹配文件
           </small>
@@ -591,9 +678,11 @@ function triggerLabel(w: any) {
             v-model="selected.data.config.output" /></label></template
       ><template
         v-else-if="
-          ['sftp_upload', 'ssh_command'].includes(selected.data.module)
+          ['sftp_upload', 'sftp_extract', 'ssh_command','remote_file_exists'].includes(
+            selected.data.module,
+          )
         "
-        ><label
+        ><div v-if="selectedServerScope" class="notice compact-notice">服务器连接继承自“{{selectedServerScope.label}}”，可使用 <code v-pre>{{server.name}}</code> 等变量。</div><label v-else
           >服务器连接<select
             v-model.number="selected.data.config.connection_id"
           >
@@ -602,10 +691,34 @@ function triggerLabel(w: any) {
               {{ c.name }} · {{ c.host }}
             </option>
           </select></label
-        ><template v-if="selected.data.module === 'sftp_upload'"
+        ><template v-if="selected.data.module === 'remote_file_exists'">
+          <label>远端文件路径<input v-model="selected.data.config.path" placeholder="/opt/app/current"/></label>
+        </template><template v-else-if="selected.data.module === 'sftp_upload'"
           ><label
             >远端路径<input
               v-model="selected.data.config.destination" /></label></template
+        ><template v-else-if="selected.data.module === 'sftp_extract'">
+          <div class="notice compact-notice">
+            自动使用当前发布中由 Action 上传的唯一 ZIP 或 tar.gz 压缩包。
+          </div>
+          <label
+            >解压目标目录<input
+              v-model="selected.data.config.destination"
+              placeholder="/opt/application"
+          /></label>
+          <label
+            >解压后权限<input
+              v-model="selected.data.config.permission"
+              inputmode="numeric"
+              pattern="[0-7]{3,4}"
+              placeholder="0755"
+          /></label>
+          <label class="checkbox-row"
+            ><input
+              v-model="selected.data.config.keep_archive"
+              type="checkbox"
+            />保留服务器上的压缩包</label
+          > </template
         ><template v-else
           ><label
             >命令（每行一条）<textarea
@@ -622,7 +735,23 @@ function triggerLabel(w: any) {
               v-model="
                 selected.data.config.work_dir
               " /></label></template></template
-      ><template v-else-if="selected.data.module === 'http_webhook'"
+      ><template v-else-if="selected.data.module === 'value_match'">
+        <label>待判断内容<textarea v-model="selected.data.config.actual" rows="4" placeholder="{{steps.command.outputs.stdout}}"></textarea></label>
+        <label>比较方式<select v-model="selected.data.config.operator"><option value="exists">存在</option><option value="equals">等于</option><option value="not_equals">不等于</option><option value="contains">包含</option><option value="regex">正则匹配</option></select></label>
+        <label v-if="selected.data.config.operator!=='exists'">期望值<input v-model="selected.data.config.expected"/></label><label class="checkbox-row"><input v-model="selected.data.config.ignore_case" type="checkbox">忽略大小写</label>
+      </template><template v-else-if="selected.data.module === 'string_split'">
+        <label>输入字符串<textarea v-model="selected.data.config.value" rows="4" placeholder="{{steps.command.outputs.stdout}}"></textarea></label><label>分隔符<input v-model="selected.data.config.separator"/></label><label class="checkbox-row"><input v-model="selected.data.config.regex" type="checkbox">分隔符使用正则表达式</label><label class="checkbox-row"><input v-model="selected.data.config.trim" type="checkbox">移除首尾空格</label><label class="checkbox-row"><input v-model="selected.data.config.drop_empty" type="checkbox">忽略空项</label>
+      </template><template v-else-if="selected.data.module === 'foreach'">
+        <label>列表输出引用<input v-model="selected.data.config.items_from" placeholder="steps.split.outputs.items"/></label><label>执行模式<select v-model="selected.data.config.mode"><option value="parallel">并行</option><option value="sequential">串行</option></select></label><label>循环并发上限<input v-model.number="selected.data.config.concurrency" type="number" min="1" max="100"/></label><label>循环结束节点<input v-model="selected.data.config.end_node_id" readonly/></label>
+      </template><template v-else-if="selected.data.module === 'loop_end'">
+        <div class="notice compact-notice">该节点由列表循环自动管理，并汇总每次循环输出。</div>
+      </template><template v-else-if="selected.data.module === 'server_list'">
+        <label>选择服务器</label><div class="server-choice-list"><label v-for="c in connections" :key="c.id" class="server-choice"><input v-model="selected.data.config.connection_ids" type="checkbox" :value="c.id"/><span><b>{{c.name}}</b><small>{{c.username}}@{{c.host}}:{{c.port}}</small></span></label><p v-if="!connections.length" class="muted">暂无服务器连接，请先在 SSH 资源中添加。</p></div>
+        <label>执行模式<select v-model="selected.data.config.mode"><option value="parallel">并行执行</option><option value="sequential">串行执行</option></select></label><label v-if="selected.data.config.mode==='parallel'">并发上限<input v-model.number="selected.data.config.concurrency" type="number" min="1" :max="Math.max(1,selected.data.config.connection_ids.length)"/></label><label>服务器列表结束节点<input v-model="selected.data.config.end_node_id" readonly/></label>
+        <div class="notice compact-notice">范围内所有节点会为每台服务器创建独立任务；服务器模块将强制使用当前服务器。</div>
+      </template><template v-else-if="selected.data.module === 'server_list_end'">
+        <div class="notice compact-notice">该节点由服务器列表自动管理，并按选择顺序汇总各服务器状态和输出。</div>
+      </template><template v-else-if="selected.data.module === 'http_webhook'"
         ><label
           >请求方法<select v-model="selected.data.config.method">
             <option>POST</option>
@@ -643,6 +772,8 @@ function triggerLabel(w: any) {
           </select></label
         ><label>期望摘要<input v-model="selected.data.config.expected" /></label
       ></template>
+      <label v-if="['ssh_command','http_webhook'].includes(selected.data.module)" class="checkbox-row"><input v-model="selected.data.config.sensitive_output" type="checkbox">输出包含敏感信息（加密保存且不展示）</label>
+      <details class="code-disclosure" v-pre><summary>可用模板变量</summary><code>{{env.NAME}}</code><br><code>{{env.global.NAME}}</code><br><code>{{env.project.NAME}}</code><br><code>{{steps.node_id.outputs.stdout}}</code><br><code>{{loop.item}}</code><br><code>{{server.id}}</code> · <code>{{server.name}}</code> · <code>{{server.host}}</code> · <code>{{server.username}}</code></details>
       <div class="form-grid">
         <label
           >超时（秒）<input
@@ -658,7 +789,7 @@ function triggerLabel(w: any) {
         /></label>
       </div>
       <div class="panel-actions">
-        <button class="btn secondary" @click="duplicate"><Copy />复制</button
+        <button v-if="!['foreach','loop_end','server_list','server_list_end'].includes(selected.data.module)" class="btn secondary" @click="duplicate"><Copy />复制</button
         ><button class="btn danger-ghost" @click="removeSelected">
           <Trash2 />删除
         </button>
@@ -673,14 +804,14 @@ function triggerLabel(w: any) {
     title="新建工作流"
     description="先设置触发条件，随后进入可视化编辑器。"
     ><label>名称<input v-model="name" autofocus /></label
-    ><label
+    ><label v-if="project?.type==='artifact'"
       >触发条件<select v-model="triggerType">
         <option value="any">任意版本</option>
         <option value="tag">仅 Tag</option>
         <option value="commit">仅 Commit</option>
         <option value="tag_glob">Tag Glob</option>
       </select></label
-    ><label v-if="triggerType === 'tag_glob'"
+    ><label v-if="project?.type==='artifact'&&triggerType === 'tag_glob'"
       >Tag 匹配规则<input v-model="triggerGlob" placeholder="v*"
     /></label>
     <div class="panel-actions">
@@ -691,17 +822,17 @@ function triggerLabel(w: any) {
     v-model="runOpen"
     title="手动运行"
     description="选择一个已有发布作为本次运行输入。"
-    ><label
+    ><label v-if="project?.type==='artifact'"
       >发布版本<select v-model.number="releaseID">
-        <option :value="0" disabled>选择版本</option>
+		<option :value="0" :disabled="project?.type==='artifact'">{{project?.type==='scheduled'?'空产物上下文':'选择版本'}}</option>
         <option v-for="r in releases" :value="r.id">{{ r.version }}</option>
       </select></label
     >
     <div class="panel-actions">
       <button class="btn secondary" @click="runOpen = false">取消</button
-      ><button class="btn" :disabled="!releaseID" @click="run">
+      ><button class="btn" :disabled="project?.type==='artifact'&&!releaseID" @click="run">
         <Play />开始运行
       </button>
     </div></Modal
-  >
+  ><Modal v-model="scheduleOpen" title="工作流定时计划" description="使用标准五段 Cron 和 IANA 时区。"><label>快捷计划<select @change="scheduleForm.cron=($event.target as HTMLSelectElement).value"><option value="0 * * * *">每小时</option><option value="0 0 * * *">每天 00:00</option><option value="0 0 * * 1">每周一 00:00</option></select></label><label>Cron<input v-model="scheduleForm.cron" placeholder="0 * * * *"></label><label>时区<input v-model="scheduleForm.timezone" placeholder="Asia/Shanghai"></label><label class="checkbox-row"><input v-model="scheduleForm.enabled" type="checkbox">启用计划</label><label class="checkbox-row"><input v-model="scheduleForm.allow_parallel" type="checkbox">允许同一工作流并行运行</label><div class="panel-actions"><button class="btn secondary" @click="triggerNow">立即测试</button><button class="btn" @click="saveSchedule">保存计划</button></div></Modal>
 </template>

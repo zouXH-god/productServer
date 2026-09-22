@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"embed"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -32,6 +34,9 @@ type App struct {
 	cfg          Config
 	router       *gin.Engine
 	releaseHooks []func(Release)
+	aiMu         sync.Mutex
+	aiStreams    map[uint][]chan []byte
+	aiCancels    map[uint]context.CancelFunc
 }
 type apiError struct {
 	Code    string `json:"code"`
@@ -57,7 +62,7 @@ func newApp(db *gorm.DB, cfg Config) (*App, error) {
 	if err := os.MkdirAll(cfg.WorkflowWorkDir, 0755); err != nil {
 		return nil, err
 	}
-	a := &App{db: db, cfg: cfg, router: gin.New()}
+	a := &App{db: db, cfg: cfg, router: gin.New(), aiStreams: map[uint][]chan []byte{}, aiCancels: map[uint]context.CancelFunc{}}
 	a.router.Use(gin.Logger(), gin.Recovery())
 	a.routes()
 	return a, nil
@@ -67,15 +72,38 @@ func (a *App) routes() {
 	r.GET("/healthz", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
 	r.GET("/readyz", a.ready)
 	r.POST("/api/auth/login", a.login)
+	r.POST("/api/auth/register", a.register)
 	r.POST("/api/upload", a.tokenAuth(), a.upload)
 	r.GET("/api/download", a.tokenDownload)
 	api := r.Group("/api", a.jwtAuth())
 	api.GET("/auth/me", a.me)
+	api.PUT("/auth/profile", a.updateProfile)
+	api.POST("/auth/password", a.changePassword)
+	api.GET("/admin/users", a.listUsers)
+	api.POST("/admin/users", a.createUser)
+	api.PUT("/admin/users/:userId", a.updateUser)
+	api.POST("/admin/users/:userId/reset-password", a.resetUserPassword)
+	api.GET("/admin/settings", a.getSystemSettings)
+	api.PUT("/admin/settings", a.updateSystemSettings)
+	api.GET("/environment-variables", a.listGlobalEnvironmentVariables)
+	api.POST("/environment-variables", a.saveGlobalEnvironmentVariable)
+	api.PUT("/environment-variables/:variableId", a.saveGlobalEnvironmentVariable)
+	api.DELETE("/environment-variables/:variableId", a.deleteGlobalEnvironmentVariable)
 	api.GET("/dashboard", a.dashboard)
 	api.GET("/runs", a.allRuns)
+	a.aiRoutes(api)
 	api.GET("/projects", a.listProjects)
 	api.POST("/projects", a.createProject)
 	api.GET("/projects/:id", a.getProject)
+	api.GET("/projects/:id/members", a.listProjectMembers)
+	api.POST("/projects/:id/members", a.addProjectMember)
+	api.PUT("/projects/:id/members/:userId", a.updateProjectMember)
+	api.DELETE("/projects/:id/members/:userId", a.deleteProjectMember)
+	api.POST("/projects/:id/transfer-owner", a.transferProjectOwner)
+	api.GET("/projects/:id/environment-variables", a.listProjectEnvironmentVariables)
+	api.POST("/projects/:id/environment-variables", a.saveProjectEnvironmentVariable)
+	api.PUT("/projects/:id/environment-variables/:variableId", a.saveProjectEnvironmentVariable)
+	api.DELETE("/projects/:id/environment-variables/:variableId", a.deleteProjectEnvironmentVariable)
 	api.DELETE("/projects/:id", a.deleteProject)
 	api.GET("/projects/:id/tokens", a.listTokens)
 	api.POST("/projects/:id/tokens", a.createToken)
@@ -86,6 +114,7 @@ func (a *App) routes() {
 	api.GET("/projects/:id/releases/:releaseId", a.getRelease)
 	api.GET("/projects/:id/releases/:releaseId/files/:fileId/download", a.download)
 	a.workflowRoutes(api)
+	a.scheduleRoutes(api)
 	assets, _ := fs.Sub(frontendFS, "frontend/dist")
 	r.NoRoute(func(c *gin.Context) {
 		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
@@ -142,15 +171,15 @@ func (a *App) login(c *gin.Context) {
 		return
 	}
 	var u User
-	if a.db.Where("username = ?", in.Username).First(&u).Error != nil || bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(in.Password)) != nil {
+	if a.db.Where("username = ?", in.Username).First(&u).Error != nil || !u.Enabled || bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(in.Password)) != nil {
 		fail(c, 401, "invalid_credentials", "invalid username or password")
 		return
 	}
 	now := time.Now()
-	claims := jwt.MapClaims{"sub": strconv.FormatUint(uint64(u.ID), 10), "iat": now.Unix(), "exp": now.Add(a.cfg.JWTExpiry).Unix()}
+	claims := jwt.MapClaims{"sub": strconv.FormatUint(uint64(u.ID), 10), "ver": u.TokenVersion, "iat": now.Unix(), "exp": now.Add(a.cfg.JWTExpiry).Unix()}
 	t := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, _ := t.SignedString([]byte(a.cfg.JWTSecret))
-	c.JSON(200, gin.H{"token": signed, "expires_at": now.Add(a.cfg.JWTExpiry)})
+	c.JSON(200, gin.H{"token": signed, "expires_at": now.Add(a.cfg.JWTExpiry), "must_change_password": u.MustChangePassword})
 }
 func (a *App) jwtAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -175,7 +204,26 @@ func (a *App) jwtAuth() gin.HandlerFunc {
 			fail(c, 401, "unauthorized", "invalid JWT subject")
 			return
 		}
+		var user User
+		if a.db.First(&user, uint(id)).Error != nil || !user.Enabled {
+			fail(c, 401, "unauthorized", "user is disabled or unavailable")
+			return
+		}
+		version := 0
+		if claims, ok := token.Claims.(jwt.MapClaims); ok {
+			switch v := claims["ver"].(type) {
+			case float64:
+				version = int(v)
+			case int:
+				version = v
+			}
+		}
+		if version != user.TokenVersion {
+			fail(c, 401, "token_revoked", "JWT has been revoked")
+			return
+		}
 		c.Set("userID", uint(id))
+		c.Set("user", user)
 		c.Next()
 	}
 }
@@ -220,23 +268,52 @@ func (a *App) me(c *gin.Context) {
 	c.JSON(200, u)
 }
 func (a *App) listProjects(c *gin.Context) {
-	var p []Project
-	a.db.Where("user_id = ?", c.MustGet("userID")).Order("id desc").Find(&p)
-	c.JSON(200, p)
+	uid := c.MustGet("userID").(uint)
+	var members []ProjectMember
+	a.db.Preload("User").Where("user_id=?", uid).Find(&members)
+	ids := []uint{}
+	roles := map[uint]string{}
+	for _, member := range members {
+		ids = append(ids, member.ProjectID)
+		roles[member.ProjectID] = member.Role
+	}
+	var projects []Project
+	if len(ids) > 0 {
+		a.db.Where("id IN ?", ids).Order("id desc").Find(&projects)
+	}
+	items := make([]gin.H, 0, len(projects))
+	for _, p := range projects {
+		items = append(items, gin.H{"id": p.ID, "name": p.Name, "type": p.Type, "created_at": p.CreatedAt, "role": roles[p.ID]})
+	}
+	c.JSON(200, items)
 }
 func (a *App) createProject(c *gin.Context) {
 	var in struct {
 		Name string `json:"name" binding:"required"`
+		Type string `json:"type"`
 	}
 	if c.ShouldBindJSON(&in) != nil || strings.TrimSpace(in.Name) == "" {
 		fail(c, 400, "invalid_request", "name is required")
 		return
 	}
-	p := Project{UserID: c.MustGet("userID").(uint), Name: strings.TrimSpace(in.Name)}
+	if in.Type == "" {
+		in.Type = "artifact"
+	}
+	if in.Type != "artifact" && in.Type != "scheduled" {
+		fail(c, 400, "invalid_project_type", "type must be artifact or scheduled")
+		return
+	}
+	p := Project{UserID: c.MustGet("userID").(uint), Name: strings.TrimSpace(in.Name), Type: in.Type}
 	var raw string
 	err := a.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&p).Error; err != nil {
 			return err
+		}
+		if err := tx.Create(&ProjectMember{ProjectID: p.ID, UserID: p.UserID, Role: "owner"}).Error; err != nil {
+			return err
+		}
+		if p.Type == "scheduled" {
+			return nil
 		}
 		_, generated, err := generateProjectToken(tx, p.ID)
 		raw = generated
@@ -246,24 +323,20 @@ func (a *App) createProject(c *gin.Context) {
 		fail(c, 409, "project_exists", "project name already exists")
 		return
 	}
-	c.JSON(201, gin.H{"id": p.ID, "name": p.Name, "created_at": p.CreatedAt, "token": raw})
+	c.JSON(201, gin.H{"id": p.ID, "name": p.Name, "type": p.Type, "role": "owner", "created_at": p.CreatedAt, "token": raw})
 }
 func (a *App) ownedProject(c *gin.Context, id uint) (Project, bool) {
-	var p Project
-	if a.db.Where("id = ? AND user_id = ?", id, c.MustGet("userID")).First(&p).Error != nil {
-		fail(c, 404, "not_found", "project not found")
-		return p, false
-	}
-	return p, true
+	p, _, ok := a.projectAccess(c, id, projectView)
+	return p, ok
 }
 func (a *App) getProject(c *gin.Context) {
 	id, ok := parseID(c, "id")
 	if !ok {
 		return
 	}
-	p, ok := a.ownedProject(c, id)
+	p, member, ok := a.projectAccess(c, id, projectView)
 	if ok {
-		c.JSON(200, p)
+		c.JSON(200, gin.H{"id": p.ID, "name": p.Name, "type": p.Type, "created_at": p.CreatedAt, "role": member.Role})
 	}
 }
 func (a *App) deleteProject(c *gin.Context) {
@@ -271,7 +344,7 @@ func (a *App) deleteProject(c *gin.Context) {
 	if !ok {
 		return
 	}
-	_, ok = a.ownedProject(c, id)
+	_, _, ok = a.projectAccess(c, id, projectOwn)
 	if !ok {
 		return
 	}
@@ -286,6 +359,19 @@ func (a *App) deleteProject(c *gin.Context) {
 		moved = true
 	}
 	err := a.db.Transaction(func(tx *gorm.DB) error {
+		var schedules []WorkflowSchedule
+		tx.Where("project_id=?", id).Find(&schedules)
+		for _, schedule := range schedules {
+			if err := tx.Where("schedule_id=?", schedule.ID).Delete(&ScheduleEvent{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Where("project_id=?", id).Delete(&WorkflowSchedule{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("project_id=?", id).Delete(&ProjectMember{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("project_id = ?", id).Delete(&ProjectToken{}).Error; err != nil {
 			return err
 		}
@@ -325,7 +411,12 @@ func (a *App) listTokens(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, ok = a.ownedProject(c, id); !ok {
+	project, _, ok := a.projectAccess(c, id, projectAdmin)
+	if !ok {
+		return
+	}
+	if project.Type != "artifact" {
+		fail(c, 400, "invalid_project_type", "scheduled projects do not have tokens")
 		return
 	}
 	var items []ProjectToken
@@ -337,7 +428,12 @@ func (a *App) createToken(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, ok = a.ownedProject(c, id); !ok {
+	project, _, ok := a.projectAccess(c, id, projectAdmin)
+	if !ok {
+		return
+	}
+	if project.Type != "artifact" {
+		fail(c, 400, "invalid_project_type", "scheduled projects do not have tokens")
 		return
 	}
 	var t ProjectToken
@@ -371,7 +467,12 @@ func (a *App) getToken(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, ok = a.ownedProject(c, id); !ok {
+	project, _, ok := a.projectAccess(c, id, projectAdmin)
+	if !ok {
+		return
+	}
+	if project.Type != "artifact" {
+		fail(c, 400, "invalid_project_type", "scheduled projects do not have tokens")
 		return
 	}
 	var token ProjectToken
@@ -387,7 +488,12 @@ func (a *App) deleteToken(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, ok = a.ownedProject(c, id); !ok {
+	project, _, ok := a.projectAccess(c, id, projectAdmin)
+	if !ok {
+		return
+	}
+	if project.Type != "artifact" {
+		fail(c, 400, "invalid_project_type", "scheduled projects do not have tokens")
 		return
 	}
 	tid, ok := parseID(c, "tokenId")
@@ -406,7 +512,12 @@ func (a *App) listReleases(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, ok = a.ownedProject(c, id); !ok {
+	project, _, ok := a.projectAccess(c, id, projectView)
+	if !ok {
+		return
+	}
+	if project.Type != "artifact" {
+		fail(c, 400, "invalid_project_type", "scheduled projects do not have releases")
 		return
 	}
 	var items []Release
@@ -418,7 +529,12 @@ func (a *App) getRelease(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, ok = a.ownedProject(c, id); !ok {
+	project, _, ok := a.projectAccess(c, id, projectView)
+	if !ok {
+		return
+	}
+	if project.Type != "artifact" {
+		fail(c, 400, "invalid_project_type", "scheduled projects do not have releases")
 		return
 	}
 	rid, ok := parseID(c, "releaseId")
@@ -487,6 +603,12 @@ func (a *App) serveArtifact(c *gin.Context, projectID, releaseID uint, f Artifac
 }
 
 func (a *App) upload(c *gin.Context) {
+	projectID := c.MustGet("projectID").(uint)
+	var project Project
+	if a.db.First(&project, projectID).Error != nil || project.Type != "artifact" {
+		fail(c, 400, "invalid_project_type", "only artifact projects accept uploads")
+		return
+	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, a.cfg.MaxBatchBytes+(10<<20))
 	if err := c.Request.ParseMultipartForm(32 << 20); err != nil {
 		fail(c, 413, "batch_too_large", "invalid or oversized multipart request")
@@ -502,7 +624,6 @@ func (a *App) upload(c *gin.Context) {
 		fail(c, 400, "files_required", "at least one file is required")
 		return
 	}
-	projectID := c.MustGet("projectID").(uint)
 	tmp, err := os.MkdirTemp(a.cfg.StorageDir, ".upload-")
 	if err != nil {
 		fail(c, 500, "storage_error", "unable to create upload staging area")

@@ -36,6 +36,14 @@ func num(c map[string]any, k string) uint {
 	}
 	return 0
 }
+func serverModule(module string) bool {
+	switch module {
+	case "sftp_upload", "sftp_extract", "ssh_command", "remote_file_exists":
+		return true
+	default:
+		return false
+	}
+}
 func safePath(root, p string) (string, error) {
 	if filepath.IsAbs(p) {
 		return "", fmt.Errorf("absolute paths are not allowed")
@@ -102,22 +110,128 @@ func oneMatchedFile(input, work string, c map[string]any) (string, error) {
 	}
 	return matches[0].Path, nil
 }
-func executeModule(ctx context.Context, db *gorm.DB, cfg Config, run WorkflowRun, p Project, r Release, n WorkflowNode, input, work string, log *runLogger) error {
+func stringSplitModule(c map[string]any) (map[string]any, *bool, error) {
+	value, separator := str(c, "value"), str(c, "separator")
+	if separator == "" {
+		separator = ","
+	}
+	var parts []string
+	if useRegex, _ := c["regex"].(bool); useRegex {
+		re, err := regexp.Compile(separator)
+		if err != nil {
+			return nil, nil, err
+		}
+		parts = re.Split(value, -1)
+	} else {
+		parts = strings.Split(value, separator)
+	}
+	items := []string{}
+	trim, _ := c["trim"].(bool)
+	drop, _ := c["drop_empty"].(bool)
+	for _, part := range parts {
+		if trim {
+			part = strings.TrimSpace(part)
+		}
+		if drop && part == "" {
+			continue
+		}
+		items = append(items, part)
+	}
+	if len(items) > 100 {
+		return nil, nil, fmt.Errorf("split result exceeds 100 items")
+	}
+	return map[string]any{"items": items, "count": len(items)}, nil, nil
+}
+func valueMatchModule(c map[string]any) (map[string]any, *bool, error) {
+	actual, expected, operator := str(c, "actual"), str(c, "expected"), str(c, "operator")
+	ignore, _ := c["ignore_case"].(bool)
+	a, b := actual, expected
+	if ignore {
+		a, b = strings.ToLower(a), strings.ToLower(b)
+	}
+	matched := false
+	switch operator {
+	case "exists":
+		matched = a != ""
+	case "equals":
+		matched = a == b
+	case "not_equals":
+		matched = a != b
+	case "contains":
+		matched = strings.Contains(a, b)
+	case "regex":
+		re, err := regexp.Compile(expected)
+		if err != nil {
+			return nil, nil, err
+		}
+		matched = re.MatchString(actual)
+	default:
+		return nil, nil, fmt.Errorf("unsupported match operator")
+	}
+	return map[string]any{"matched": matched, "actual": actual}, &matched, nil
+}
+func remoteFileExistsModule(ctx context.Context, db *gorm.DB, cfg Config, run WorkflowRun, c map[string]any) (map[string]any, *bool, error) {
+	client, err := sshForRun(db, cfg, run, num(c, "connection_id"))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer client.Close()
+	session, err := client.NewSession()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer session.Close()
+	remote := str(c, "path")
+	if remote == "" {
+		return nil, nil, fmt.Errorf("remote path required")
+	}
+	done := make(chan error, 1)
+	go func() { done <- session.Run("test -e " + shellQuote(remote)) }()
+	exists := false
+	select {
+	case <-ctx.Done():
+		client.Close()
+		return nil, nil, ctx.Err()
+	case err = <-done:
+		if err == nil {
+			exists = true
+		} else if _, ok := err.(*ssh.ExitError); !ok {
+			return nil, nil, err
+		}
+	}
+	return map[string]any{"matched": exists, "exists": exists, "path": remote}, &exists, nil
+}
+func executeModule(ctx context.Context, db *gorm.DB, cfg Config, run WorkflowRun, p Project, r Release, n WorkflowNode, input, work string, log *runLogger) (map[string]any, *bool, error) {
 	switch n.Type {
 	case "archive":
-		return archiveModule(n.Config, input, work)
+		err := archiveModule(n.Config, input, work)
+		return map[string]any{"path": str(n.Config, "output")}, nil, err
 	case "extract":
-		return extractModule(n.Config, input, work)
+		err := extractModule(n.Config, input, work)
+		return map[string]any{"path": str(n.Config, "output")}, nil, err
 	case "checksum_verify":
-		return checksumModule(n.Config, input, work)
+		err := checksumModule(n.Config, input, work)
+		return map[string]any{"verified": err == nil}, nil, err
 	case "http_webhook":
 		return webhookModule(ctx, cfg, n.Config, p, r, input, work)
 	case "ssh_command":
 		return sshCommandModule(ctx, db, cfg, run, n.Config, p, r, input, work, log)
 	case "sftp_upload":
-		return sftpModule(ctx, db, cfg, run, n.Config, input, work)
+		err := sftpModule(ctx, db, cfg, run, n.Config, input, work)
+		return map[string]any{"destination": str(n.Config, "destination")}, nil, err
+	case "sftp_extract":
+		err := sftpExtractModule(ctx, db, cfg, run, n.Config, p, r, input, log)
+		return map[string]any{"destination": str(n.Config, "destination")}, nil, err
+	case "string_split":
+		return stringSplitModule(n.Config)
+	case "value_match":
+		return valueMatchModule(n.Config)
+	case "remote_file_exists":
+		return remoteFileExistsModule(ctx, db, cfg, run, n.Config)
+	case "foreach", "loop_end", "server_list", "server_list_end":
+		return map[string]any{}, nil, nil
 	}
-	return fmt.Errorf("unknown module %s", n.Type)
+	return nil, nil, fmt.Errorf("unknown module %s", n.Type)
 }
 func archiveModule(c map[string]any, input, work string) error {
 	pattern := str(c, "input")
@@ -355,15 +469,15 @@ func webhookAllowed(raw, allow string) bool {
 	}
 	return false
 }
-func webhookModule(ctx context.Context, cfg Config, c map[string]any, p Project, r Release, input, work string) error {
+func webhookModule(ctx context.Context, cfg Config, c map[string]any, p Project, r Release, input, work string) (map[string]any, *bool, error) {
 	raw := render(str(c, "url"), p, r, input, work)
 	if !webhookAllowed(raw, cfg.WebhookAllowlist) {
-		return fmt.Errorf("webhook URL is not allowed")
+		return nil, nil, fmt.Errorf("webhook URL is not allowed")
 	}
 	body := render(str(c, "body"), p, r, input, work)
 	req, e := http.NewRequestWithContext(ctx, strings.ToUpper(str(c, "method")), raw, strings.NewReader(body))
 	if e != nil {
-		return e
+		return nil, nil, e
 	}
 	if req.Method == "" {
 		req.Method = "POST"
@@ -372,7 +486,7 @@ func webhookModule(ctx context.Context, cfg Config, c map[string]any, p Project,
 		secret = strings.TrimPrefix(secret, "enc:")
 		plain, e := decryptSecret(cfg.SecretEncryptionKey, secret)
 		if e != nil {
-			return e
+			return nil, nil, e
 		}
 		req.Header.Set("Authorization", "Bearer "+plain)
 	}
@@ -387,13 +501,20 @@ func webhookModule(ctx context.Context, cfg Config, c map[string]any, p Project,
 	}}
 	resp, e := client.Do(req)
 	if e != nil {
-		return e
+		return nil, nil, e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("webhook returned %s", resp.Status)
+		return map[string]any{"status_code": resp.StatusCode}, nil, fmt.Errorf("webhook returned %s", resp.Status)
 	}
-	return nil
+	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(data) > 1<<20 {
+		return nil, nil, fmt.Errorf("HTTP response exceeds 1 MiB")
+	}
+	return map[string]any{"status_code": resp.StatusCode, "body": string(data)}, nil, nil
 }
 func sshForRun(db *gorm.DB, cfg Config, run WorkflowRun, id uint) (*ssh.Client, error) {
 	var project Project
@@ -403,15 +524,15 @@ func sshForRun(db *gorm.DB, cfg Config, run WorkflowRun, id uint) (*ssh.Client, 
 	a := &App{db: db, cfg: cfg}
 	return a.sshClient(id, project.UserID)
 }
-func sshCommandModule(ctx context.Context, db *gorm.DB, cfg Config, run WorkflowRun, c map[string]any, p Project, r Release, input, work string, log *runLogger) error {
+func sshCommandModule(ctx context.Context, db *gorm.DB, cfg Config, run WorkflowRun, c map[string]any, p Project, r Release, input, work string, log *runLogger) (map[string]any, *bool, error) {
 	client, e := sshForRun(db, cfg, run, num(c, "connection_id"))
 	if e != nil {
-		return e
+		return nil, nil, e
 	}
 	defer client.Close()
 	session, e := client.NewSession()
 	if e != nil {
-		return e
+		return nil, nil, e
 	}
 	defer session.Close()
 	commands := []string{}
@@ -421,24 +542,134 @@ func sshCommandModule(ctx context.Context, db *gorm.DB, cfg Config, run Workflow
 		}
 	}
 	cmd := strings.Join(commands, "\n")
-	if wd := str(c, "workdir"); wd != "" {
+	wd := str(c, "work_dir")
+	if wd == "" {
+		wd = str(c, "workdir")
+	}
+	if wd != "" {
 		cmd = "cd " + shellQuote(render(wd, p, r, input, work)) + "\n" + cmd
 	}
-	done := make(chan error, 1)
+	type commandResult struct {
+		output []byte
+		err    error
+	}
+	done := make(chan commandResult, 1)
 	go func() {
 		out, e := session.CombinedOutput(cmd)
-		log.write("ssh_command", "stdout", string(out))
-		done <- e
+		if len(out) > 1<<20 {
+			out = out[:1<<20]
+			if e == nil {
+				e = fmt.Errorf("SSH output exceeds 1 MiB")
+			}
+		}
+		done <- commandResult{out, e}
+	}()
+	select {
+	case <-ctx.Done():
+		client.Close()
+		return nil, nil, ctx.Err()
+	case result := <-done:
+		outputs := map[string]any{"stdout": string(result.output), "stderr": "", "exit_code": 0}
+		if result.err != nil {
+			if exit, ok := result.err.(*ssh.ExitError); ok {
+				outputs["exit_code"] = exit.ExitStatus()
+			}
+		}
+		return outputs, nil, result.err
+	}
+}
+func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
+
+func actionArchive(r Release) (ArtifactFile, error) {
+	archives := []ArtifactFile{}
+	for _, file := range r.Files {
+		name := strings.ToLower(file.OriginalName)
+		if (file.Kind == "" || file.Kind == "uploaded") && (strings.HasSuffix(name, ".zip") || strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".tgz")) {
+			archives = append(archives, file)
+		}
+	}
+	if len(archives) != 1 {
+		return ArtifactFile{}, fmt.Errorf("release must contain exactly one Action upload archive, found %d", len(archives))
+	}
+	return archives[0], nil
+}
+
+func remoteExtractCommand(archive, destination, permission string, keep bool) (string, error) {
+	if strings.TrimSpace(destination) == "" {
+		return "", fmt.Errorf("remote destination is required")
+	}
+	if permission == "" {
+		permission = "0755"
+	}
+	if ok, _ := regexp.MatchString(`^[0-7]{3,4}$`, permission); !ok {
+		return "", fmt.Errorf("permission must be a 3 or 4 digit octal mode")
+	}
+	lower := strings.ToLower(archive)
+	var extract string
+	if strings.HasSuffix(lower, ".zip") {
+		extract = "unzip -oq " + shellQuote(archive) + " -d " + shellQuote(destination)
+	} else if strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz") {
+		extract = "tar -xzf " + shellQuote(archive) + " -C " + shellQuote(destination)
+	} else {
+		return "", fmt.Errorf("unsupported Action archive format")
+	}
+	commands := []string{"set -e", "mkdir -p " + shellQuote(destination), extract, "chmod -R " + permission + " " + shellQuote(destination)}
+	if !keep {
+		commands = append(commands, "rm -f "+shellQuote(archive))
+	}
+	return strings.Join(commands, "\n"), nil
+}
+
+func sftpExtractModule(ctx context.Context, db *gorm.DB, cfg Config, run WorkflowRun, c map[string]any, p Project, r Release, input string, log *runLogger) error {
+	archive, err := actionArchive(r)
+	if err != nil {
+		return err
+	}
+	local, err := safePath(input, archive.OriginalName)
+	if err != nil {
+		return err
+	}
+	destination := render(str(c, "destination"), p, r, input, "")
+	remoteArchive := pathJoinRemote(destination, fmt.Sprintf(".productserver-%d-%s", run.ID, filepath.Base(archive.OriginalName)))
+	keep, _ := c["keep_archive"].(bool)
+	command, err := remoteExtractCommand(remoteArchive, destination, str(c, "permission"), keep)
+	if err != nil {
+		return err
+	}
+	client, err := sshForRun(db, cfg, run, num(c, "connection_id"))
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	sf, err := sftp.NewClient(client)
+	if err != nil {
+		return err
+	}
+	if err = sftpFile(sf, local, remoteArchive); err != nil {
+		sf.Close()
+		return fmt.Errorf("upload Action archive: %w", err)
+	}
+	sf.Close()
+	session, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer session.Close()
+	done := make(chan error, 1)
+	go func() {
+		output, runErr := session.CombinedOutput(command)
+		log.write("sftp_extract", "stdout", string(output))
+		done <- runErr
 	}()
 	select {
 	case <-ctx.Done():
 		client.Close()
 		return ctx.Err()
-	case e := <-done:
-		return e
+	case err = <-done:
+		return err
 	}
 }
-func shellQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
+
 func sftpModule(ctx context.Context, db *gorm.DB, cfg Config, run WorkflowRun, c map[string]any, input, work string) error {
 	client, e := sshForRun(db, cfg, run, num(c, "connection_id"))
 	if e != nil {

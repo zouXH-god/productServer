@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/ssh"
+	"io"
 	"net"
 	"os"
 	"strconv"
@@ -29,6 +31,7 @@ func (a *App) workflowRoutes(api *gin.RouterGroup) {
 	api.POST("/projects/:id/workflows/:workflowId/runs", a.manualRun)
 	api.GET("/projects/:id/runs", a.listRuns)
 	api.GET("/projects/:id/runs/:runId", a.getRun)
+	api.GET("/projects/:id/runs/:runId/logs", a.getRunLogs)
 	api.POST("/projects/:id/runs/:runId/cancel", a.cancelRun)
 	api.GET("/projects/:id/runs/:runId/logs/stream", a.streamLogs)
 }
@@ -80,7 +83,20 @@ func (a *App) deleteCredential(c *gin.Context) {
 }
 func (a *App) listConnections(c *gin.Context) {
 	var x []SSHConnection
-	a.db.Where("user_id=?", c.MustGet("userID")).Find(&x)
+	ownerID := c.MustGet("userID").(uint)
+	if raw := c.Query("project_id"); raw != "" {
+		id, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			fail(c, 400, "invalid_id", "invalid project_id")
+			return
+		}
+		project, _, ok := a.projectAccess(c, uint(id), projectView)
+		if !ok {
+			return
+		}
+		ownerID = project.UserID
+	}
+	a.db.Where("user_id=?", ownerID).Find(&x)
 	c.JSON(200, x)
 }
 
@@ -238,24 +254,42 @@ func (a *App) listWorkflows(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, ok = a.ownedProject(c, pid); !ok {
+	if _, _, ok = a.projectAccess(c, pid, projectView); !ok {
 		return
 	}
 	var x []Workflow
 	a.db.Where("project_id=?", pid).Find(&x)
-	c.JSON(200, x)
+	items := make([]gin.H, 0, len(x))
+	for _, w := range x {
+		item := gin.H{"id": w.ID, "project_id": w.ProjectID, "name": w.Name, "enabled": w.Enabled, "trigger_type": w.TriggerType, "trigger_glob": w.TriggerGlob, "created_at": w.CreatedAt, "updated_at": w.UpdatedAt}
+		var schedule WorkflowSchedule
+		if a.db.Where("workflow_id=?", w.ID).First(&schedule).Error == nil {
+			item["schedule"] = schedule
+			var event ScheduleEvent
+			if a.db.Where("schedule_id=?", schedule.ID).Order("id desc").First(&event).Error == nil {
+				item["last_schedule_event"] = event
+			}
+		}
+		items = append(items, item)
+	}
+	c.JSON(200, items)
 }
 func (a *App) saveWorkflow(c *gin.Context) {
 	pid, ok := parseID(c, "id")
 	if !ok {
 		return
 	}
-	if _, ok = a.ownedProject(c, pid); !ok {
+	project, _, ok := a.projectAccess(c, pid, projectDevelop)
+	if !ok {
 		return
 	}
 	var p workflowPayload
 	if c.ShouldBindJSON(&p) != nil || p.Name == "" || !validateDefinition(p.Definition) {
 		fail(c, 400, "invalid_workflow", "valid name and acyclic DAG required")
+		return
+	}
+	if err := a.validateWorkflowConnections(project.UserID, p.Definition); err != nil {
+		fail(c, 400, "invalid_server_list", err.Error())
 		return
 	}
 	if p.TriggerType != "any" && p.TriggerType != "tag" && p.TriggerType != "commit" && p.TriggerType != "tag_glob" {
@@ -309,12 +343,37 @@ func (a *App) saveWorkflow(c *gin.Context) {
 	redactWorkflowSecrets(&p.Definition)
 	c.JSON(status, gin.H{"id": w.ID, "project_id": w.ProjectID, "name": w.Name, "enabled": w.Enabled, "trigger_type": w.TriggerType, "trigger_glob": w.TriggerGlob, "definition": p.Definition, "created_at": w.CreatedAt, "updated_at": w.UpdatedAt})
 }
+
+func (a *App) validateWorkflowConnections(userID uint, definition WorkflowDefinition) error {
+	for _, node := range definition.Nodes {
+		if node.Type != "server_list" {
+			continue
+		}
+		ids, ok := uintList(node.Config["connection_ids"])
+		if !ok || len(ids) == 0 {
+			return fmt.Errorf("服务器列表至少需要选择一台服务器")
+		}
+		seen := map[uint]bool{}
+		for _, id := range ids {
+			if seen[id] {
+				return fmt.Errorf("服务器列表包含重复连接 %d", id)
+			}
+			seen[id] = true
+			var count int64
+			a.db.Model(&SSHConnection{}).Where("id=? AND user_id=?", id, userID).Count(&count)
+			if count != 1 {
+				return fmt.Errorf("服务器连接 %d 不存在或无权访问", id)
+			}
+		}
+	}
+	return nil
+}
 func (a *App) getWorkflow(c *gin.Context) {
 	pid, ok := parseID(c, "id")
 	if !ok {
 		return
 	}
-	if _, ok = a.ownedProject(c, pid); !ok {
+	if _, _, ok = a.projectAccess(c, pid, projectView); !ok {
 		return
 	}
 	var w Workflow
@@ -340,8 +399,13 @@ func (a *App) deleteWorkflow(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, ok = a.ownedProject(c, pid); !ok {
+	if _, _, ok = a.projectAccess(c, pid, projectDevelop); !ok {
 		return
+	}
+	var schedule WorkflowSchedule
+	if a.db.Where("workflow_id=?", c.Param("workflowId")).First(&schedule).Error == nil {
+		a.db.Where("schedule_id=?", schedule.ID).Delete(&ScheduleEvent{})
+		a.db.Delete(&schedule)
 	}
 	a.db.Where("id=? AND project_id=?", c.Param("workflowId"), pid).Delete(&Workflow{})
 	c.Status(204)
@@ -351,7 +415,8 @@ func (a *App) manualRun(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, ok = a.ownedProject(c, pid); !ok {
+	project, _, ok := a.projectAccess(c, pid, projectDevelop)
+	if !ok {
 		return
 	}
 	var in struct {
@@ -363,11 +428,21 @@ func (a *App) manualRun(c *gin.Context) {
 	}
 	var w Workflow
 	var r Release
-	if a.db.Where("id=? AND project_id=?", c.Param("workflowId"), pid).First(&w).Error != nil || a.db.Where("id=? AND project_id=?", in.ReleaseID, pid).First(&r).Error != nil {
-		fail(c, 404, "not_found", "workflow or release not found")
+	if a.db.Where("id=? AND project_id=?", c.Param("workflowId"), pid).First(&w).Error != nil {
+		fail(c, 404, "not_found", "workflow not found")
 		return
 	}
-	run, e := createRun(a.db, a.cfg, w, r)
+	var run WorkflowRun
+	var e error
+	if project.Type == "scheduled" {
+		run, e = createEmptyRun(a.db, a.cfg, w, project, "manual", nil, false)
+	} else {
+		if a.db.Where("id=? AND project_id=?", in.ReleaseID, pid).First(&r).Error != nil {
+			fail(c, 404, "not_found", "release not found")
+			return
+		}
+		run, e = createArtifactRun(a.db, a.cfg, w, r, "manual")
+	}
 	if e != nil {
 		fail(c, 500, "run_failed", e.Error())
 		return
@@ -379,7 +454,7 @@ func (a *App) listRuns(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, ok = a.ownedProject(c, pid); !ok {
+	if _, _, ok = a.projectAccess(c, pid, projectView); !ok {
 		return
 	}
 	var x []WorkflowRun
@@ -391,7 +466,8 @@ func (a *App) getRun(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, ok = a.ownedProject(c, pid); !ok {
+	project, _, ok := a.projectAccess(c, pid, projectView)
+	if !ok {
 		return
 	}
 	var x WorkflowRun
@@ -399,14 +475,87 @@ func (a *App) getRun(c *gin.Context) {
 		fail(c, 404, "not_found", "run not found")
 		return
 	}
-	c.JSON(200, x)
+	var definition WorkflowDefinition
+	_ = json.Unmarshal([]byte(x.Snapshot), &definition)
+	var workflow Workflow
+	var release Release
+	var runProject Project
+	a.db.First(&workflow, x.WorkflowID)
+	a.db.First(&release, x.ReleaseID)
+	a.db.First(&runProject, x.ProjectID)
+	nodes := make([]gin.H, 0, len(x.Nodes))
+	serverIDs := []uint{}
+	for _, node := range x.Nodes {
+		if node.ServerConnectionID != 0 {
+			serverIDs = append(serverIDs, node.ServerConnectionID)
+		}
+	}
+	serverViews := map[uint]SSHConnection{}
+	if len(serverIDs) > 0 {
+		var connections []SSHConnection
+		a.db.Select("id,name,host,port,username,auth_type").Where("id IN ? AND user_id=?", serverIDs, project.UserID).Find(&connections)
+		for _, connection := range connections {
+			serverViews[connection.ID] = connection
+		}
+	}
+	for _, node := range x.Nodes {
+		var outputs any
+		if !node.OutputsSensitive && node.Outputs != "" {
+			_ = json.Unmarshal([]byte(node.Outputs), &outputs)
+		}
+		var server any
+		if view, exists := serverViews[node.ServerConnectionID]; exists {
+			server = gin.H{"id": view.ID, "name": view.Name, "host": view.Host, "port": view.Port, "username": view.Username, "auth_type": view.AuthType}
+		}
+		nodes = append(nodes, gin.H{"id": node.ID, "node_key": node.NodeKey, "module": node.Module, "status": node.Status, "attempts": node.Attempts, "error_summary": node.ErrorSummary, "outputs": outputs, "outputs_sensitive": node.OutputsSensitive, "loop_node_key": node.LoopNodeKey, "iteration_index": node.IterationIndex, "server_list_node_key": node.ServerListNodeKey, "server_connection_id": node.ServerConnectionID, "server_index": node.ServerIndex, "server": server, "started_at": node.StartedAt, "finished_at": node.FinishedAt})
+	}
+	version := release.Version
+	if version == "" {
+		version = x.DisplayVersion
+	}
+	c.JSON(200, gin.H{"id": x.ID, "project_id": x.ProjectID, "project_name": runProject.Name, "workflow_id": x.WorkflowID, "workflow_name": workflow.Name, "release_id": x.ReleaseID, "version": version, "ref_type": release.RefType, "commit_sha": release.CommitSHA, "trigger_source": x.TriggerSource, "scheduled_for": x.ScheduledFor, "status": x.Status, "error_summary": x.ErrorSummary, "created_at": x.CreatedAt, "started_at": x.StartedAt, "finished_at": x.FinishedAt, "log_bytes": x.LogBytes, "definition": definition, "nodes": nodes})
+}
+func (a *App) getRunLogs(c *gin.Context) {
+	pid, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	if _, _, ok = a.projectAccess(c, pid, projectView); !ok {
+		return
+	}
+	var run WorkflowRun
+	if a.db.Where("id=? AND project_id=?", c.Param("runId"), pid).First(&run).Error != nil {
+		fail(c, 404, "not_found", "run not found")
+		return
+	}
+	entries := []map[string]any{}
+	f, err := os.Open(run.LogPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			c.JSON(200, entries)
+			return
+		}
+		fail(c, 500, "log_unavailable", err.Error())
+		return
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(io.LimitReader(f, 16<<20))
+	scanner.Buffer(make([]byte, 64*1024), 2<<20)
+	nodeFilter := c.Query("node")
+	for scanner.Scan() {
+		var entry map[string]any
+		if json.Unmarshal(scanner.Bytes(), &entry) == nil && (nodeFilter == "" || fmt.Sprint(entry["node"]) == nodeFilter) {
+			entries = append(entries, entry)
+		}
+	}
+	c.JSON(200, entries)
 }
 func (a *App) cancelRun(c *gin.Context) {
 	pid, ok := parseID(c, "id")
 	if !ok {
 		return
 	}
-	if _, ok = a.ownedProject(c, pid); !ok {
+	if _, _, ok = a.projectAccess(c, pid, projectDevelop); !ok {
 		return
 	}
 	a.db.Model(&WorkflowRun{}).Where("id=? AND project_id=?", c.Param("runId"), pid).Update("cancel_requested", true)
@@ -417,7 +566,7 @@ func (a *App) streamLogs(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, ok = a.ownedProject(c, pid); !ok {
+	if _, _, ok = a.projectAccess(c, pid, projectView); !ok {
 		return
 	}
 	var run WorkflowRun

@@ -15,6 +15,9 @@ type Config struct {
 	SecretEncryptionKey, WorkflowLogDir, WorkflowWorkDir, WebhookAllowlist string
 	WorkerConcurrency                                                      int
 	WorkerLease, WorkerHeartbeat, FailedWorkspaceRetention                 time.Duration
+	AIMaxContextChars, AIMaxToolRounds                                     int
+	AIRequestTimeout                                                       time.Duration
+	AIMaxResponseBytes                                                     int64
 }
 
 func env(key, fallback string) string {
@@ -69,6 +72,23 @@ func loadConfig() (Config, error) {
 	c.FailedWorkspaceRetention, err = time.ParseDuration(env("FAILED_WORKSPACE_RETENTION", "72h"))
 	if err != nil {
 		return Config{}, fmt.Errorf("invalid FAILED_WORKSPACE_RETENTION")
+	}
+	aiContext, err := envInt64("AI_MAX_CONTEXT_CHARS", 200000)
+	if err != nil {
+		return Config{}, err
+	}
+	aiRounds, err := envInt64("AI_MAX_TOOL_ROUNDS", 12)
+	if err != nil {
+		return Config{}, err
+	}
+	aiBytes, err := envInt64("AI_MAX_RESPONSE_BYTES", 8<<20)
+	if err != nil {
+		return Config{}, err
+	}
+	c.AIMaxContextChars, c.AIMaxToolRounds, c.AIMaxResponseBytes = int(aiContext), int(aiRounds), aiBytes
+	c.AIRequestTimeout, err = time.ParseDuration(env("AI_REQUEST_TIMEOUT", "120s"))
+	if err != nil || c.AIRequestTimeout <= 0 {
+		return Config{}, fmt.Errorf("invalid AI_REQUEST_TIMEOUT")
 	}
 	if c.MaxBatchBytes < c.MaxFileBytes {
 		return Config{}, fmt.Errorf("MAX_BATCH_BYTES must be >= MAX_FILE_BYTES")

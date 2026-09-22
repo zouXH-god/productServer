@@ -1,2 +1,6 @@
-<script setup lang="ts">import{onMounted,onUnmounted}from'vue';defineProps<{modelValue:any,title:string}>();const emit=defineEmits(['update:modelValue']);function close(){emit('update:modelValue',false)}function key(e:KeyboardEvent){if(e.key==='Escape')close()}onMounted(()=>document.addEventListener('keydown',key));onUnmounted(()=>document.removeEventListener('keydown',key))</script>
-<template><Teleport to="body"><Transition name="drawer"><div v-if="modelValue" class="drawer-wrap" @mousedown.self="close"><aside class="drawer"><header class="panel-head"><h2>{{title}}</h2><button class="icon-btn" aria-label="关闭" @click="close">×</button></header><div class="panel-body"><slot/></div></aside></div></Transition></Teleport></template>
+<script setup lang="ts">
+import { onMounted, onUnmounted } from "vue";
+defineProps<{ modelValue: any; title: string; wide?: boolean }>();
+const emit=defineEmits(["update:modelValue"]);function close(){emit("update:modelValue",false)}function key(e:KeyboardEvent){if(e.key==="Escape")close()}onMounted(()=>document.addEventListener("keydown",key));onUnmounted(()=>document.removeEventListener("keydown",key));
+</script>
+<template><Teleport to="body"><Transition name="drawer"><div v-if="modelValue" class="drawer-wrap" :class="{'drawer-wide':wide}" @mousedown.self="close"><aside class="drawer"><header class="panel-head"><h2>{{title}}</h2><button class="icon-btn" aria-label="关闭" @click="close">×</button></header><div class="panel-body"><slot/></div></aside></div></Transition></Teleport></template>

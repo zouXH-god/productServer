@@ -1,0 +1,14 @@
+<script setup lang="ts">
+import { onMounted, ref } from "vue";
+import { Plus, ShieldCheck, UserRound } from "lucide-vue-next";
+import { api } from "../api";
+import Modal from "../components/Modal.vue";
+const users=ref<any[]>([]), settings=ref<any>(), open=ref(false), form=ref({username:"",email:"",password:""}), reset=ref<any>(), password=ref(""), error=ref("");
+async function load(){[users.value,settings.value]=await Promise.all([api<any[]>("/api/admin/users"),api<any>("/api/admin/settings")])}
+async function create(){try{await api("/api/admin/users",{method:"POST",body:JSON.stringify(form.value)});open.value=false;form.value={username:"",email:"",password:""};await load()}catch(e:any){error.value=e.message}}
+async function update(u:any,data:any){await api(`/api/admin/users/${u.id}`,{method:"PUT",body:JSON.stringify(data)});await load()}
+async function resetPassword(){await api(`/api/admin/users/${reset.value.id}/reset-password`,{method:"POST",body:JSON.stringify({password:password.value})});reset.value=undefined;password.value=""}
+async function registration(){settings.value=await api("/api/admin/settings",{method:"PUT",body:JSON.stringify({registration_enabled:!settings.value.registration_enabled})})}
+onMounted(load);
+</script>
+<template><div class="page-heading"><div><span class="eyebrow">系统管理</span><h1>用户管理</h1><p>管理账号状态、管理员和注册入口。</p></div><button class="btn" @click="open=true"><Plus/>创建用户</button></div><section class="card"><div class="section-head"><div><h2>开放注册</h2><p>允许访客从登录页创建账号。</p></div><button class="btn secondary" @click="registration">{{settings?.registration_enabled?'关闭注册':'开放注册'}}</button></div></section><div class="member-list"><article v-for="u in users" :key="u.id" class="card member-card"><UserRound/><div class="grow"><b>{{u.username}}</b><small>{{u.email||'未设置邮箱'}}</small></div><span v-if="u.is_admin" class="badge"><ShieldCheck/>系统管理员</span><button class="btn secondary" @click="update(u,{enabled:!u.enabled})">{{u.enabled?'禁用':'启用'}}</button><button class="btn secondary" @click="update(u,{is_admin:!u.is_admin})">{{u.is_admin?'撤销管理员':'设为管理员'}}</button><button class="btn secondary" @click="reset=u">重置密码</button></article></div><p v-if="error" class="error">{{error}}</p><Modal v-model="open" title="创建用户"><label>用户名<input v-model="form.username"></label><label>邮箱（可选）<input v-model="form.email" type="email"></label><label>初始密码<input v-model="form.password" type="password"></label><div class="panel-actions"><button class="btn" @click="create">创建</button></div></Modal><Modal :model-value="!!reset" title="重置密码" @update:model-value="reset=undefined"><label>新密码<input v-model="password" type="password"></label><div class="panel-actions"><button class="btn" @click="resetPassword">确认重置</button></div></Modal></template>

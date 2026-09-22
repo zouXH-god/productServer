@@ -1,0 +1,51 @@
+name: Build Product Server
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: shiran2488/golang-with-node:1.23
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v3
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Test frontend
+        working-directory: frontend
+        run: npm test
+
+      - name: Build frontend for embedding
+        working-directory: frontend
+        run: npm run build
+
+      - name: Test backend
+        run: go test ./...
+
+      - name: Build embedded Linux binary
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: "1"
+        run: |
+          set -eu
+          mkdir -p build
+          go build -trimpath -ldflags="-s -w" -o build/productserver-linux-amd64 .
+          sha256sum build/productserver-linux-amd64 > build/productserver-linux-amd64.sha256
+
+      - name: Save build artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: productserver-linux-amd64
+          path: |
+            build/productserver-linux-amd64
+            build/productserver-linux-amd64.sha256

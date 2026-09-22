@@ -31,6 +31,7 @@ func openDatabase(c Config) (*gorm.DB, error) {
 	return gorm.Open(dialector, &gorm.Config{})
 }
 func migrateAndBootstrap(db *gorm.DB, c Config) error {
+	hadUserEnabled := db.Migrator().HasColumn(&User{}, "enabled")
 	// Older versions allowed multiple tokens. Keep the newest before adding the
 	// unique project constraint.
 	if db.Migrator().HasTable(&ProjectToken{}) {
@@ -49,7 +50,15 @@ func migrateAndBootstrap(db *gorm.DB, c Config) error {
 			}
 		}
 	}
-	if err := db.AutoMigrate(&User{}, &Project{}, &ProjectToken{}, &Release{}, &ArtifactFile{}, &SSHCredential{}, &SSHConnection{}, &Workflow{}, &ReleaseEvent{}, &WorkflowRun{}, &WorkflowNodeRun{}, &WorkflowLock{}, &ExecutionSlot{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &Project{}, &ProjectMember{}, &SystemSetting{}, &ProjectToken{}, &Release{}, &ArtifactFile{}, &SSHCredential{}, &SSHConnection{}, &Workflow{}, &WorkflowSchedule{}, &ScheduleEvent{}, &ReleaseEvent{}, &WorkflowRun{}, &WorkflowNodeRun{}, &WorkflowLock{}, &ExecutionSlot{}, &EnvironmentVariable{}, &AIProvider{}, &AIConversation{}, &AIMessage{}); err != nil {
+		return err
+	}
+	db.Model(&Project{}).Where("type='' OR type IS NULL").Update("type", "artifact")
+	if !hadUserEnabled {
+		db.Model(&User{}).Where("enabled=?", false).Update("enabled", true)
+	}
+	db.FirstOrCreate(&SystemSetting{Key: "registration_enabled"}, SystemSetting{Key: "registration_enabled", Value: "true"})
+	if err := normalizeStoredWorkflowCanvases(db); err != nil {
 		return err
 	}
 	if c.WorkerConcurrency <= 0 {
@@ -63,6 +72,10 @@ func migrateAndBootstrap(db *gorm.DB, c Config) error {
 		return err
 	}
 	for _, project := range projects {
+		db.FirstOrCreate(&ProjectMember{}, ProjectMember{ProjectID: project.ID, UserID: project.UserID, Role: "owner"})
+		if project.Type == "scheduled" {
+			continue
+		}
 		var count int64
 		if err := db.Model(&ProjectToken{}).Where("project_id = ?", project.ID).Count(&count).Error; err != nil {
 			return err
@@ -78,6 +91,14 @@ func migrateAndBootstrap(db *gorm.DB, c Config) error {
 		return err
 	}
 	if count > 0 {
+		var admins int64
+		db.Model(&User{}).Where("is_admin=?", true).Count(&admins)
+		if admins == 0 {
+			var first User
+			if db.Order("id").First(&first).Error == nil {
+				db.Model(&first).Updates(map[string]any{"is_admin": true, "enabled": true})
+			}
+		}
 		return nil
 	}
 	if strings.TrimSpace(c.AdminUsername) == "" || c.AdminPassword == "" {
@@ -87,5 +108,5 @@ func migrateAndBootstrap(db *gorm.DB, c Config) error {
 	if err != nil {
 		return err
 	}
-	return db.Create(&User{Username: strings.TrimSpace(c.AdminUsername), PasswordHash: string(h)}).Error
+	return db.Create(&User{Username: strings.TrimSpace(c.AdminUsername), PasswordHash: string(h), IsAdmin: true, Enabled: true}).Error
 }
