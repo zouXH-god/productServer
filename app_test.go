@@ -3,7 +3,11 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -224,6 +228,44 @@ func TestSSHPasswordConnectionIsEncrypted(t *testing.T) {
 	plain, err := decryptSecret(a.cfg.SecretEncryptionKey, connection.PasswordEncrypted)
 	if err != nil || plain != "very-secret" {
 		t.Fatalf("stored password cannot be decrypted: %q %v", plain, err)
+	}
+}
+
+func TestCreateSSHCredentialAcceptsSnakeCasePrivateKey(t *testing.T) {
+	a, _ := testApp(t)
+	a.cfg.SecretEncryptionKey = "12345678901234567890123456789012"
+	jwt := loginToken(t, a)
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePEM := string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	body, err := json.Marshal(map[string]string{"name": "deploy-key", "private_key": privatePEM})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := request(t, a, "POST", "/api/ssh-credentials", bytes.NewReader(body), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + jwt})
+	if w.Code != 201 {
+		t.Fatalf("create SSH credential: %d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), privatePEM) {
+		t.Fatal("private key leaked in API response")
+	}
+	var credential SSHCredential
+	if err := a.db.Where("name = ?", "deploy-key").First(&credential).Error; err != nil {
+		t.Fatal(err)
+	}
+	if credential.PrivateKeyEncrypted == "" || credential.PrivateKeyEncrypted == privatePEM {
+		t.Fatal("private key was not encrypted")
+	}
+	plain, err := decryptSecret(a.cfg.SecretEncryptionKey, credential.PrivateKeyEncrypted)
+	if err != nil || plain != strings.TrimSpace(privatePEM) {
+		t.Fatalf("stored private key cannot be decrypted: %v", err)
 	}
 }
 func uploadBody(t *testing.T, version string, files map[string]string) (*bytes.Buffer, string) {

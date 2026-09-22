@@ -41,11 +41,17 @@ func (a *App) listCredentials(c *gin.Context) {
 	c.JSON(200, x)
 }
 func (a *App) createCredential(c *gin.Context) {
-	var in struct{ Name, PrivateKey, Passphrase string }
-	if c.ShouldBindJSON(&in) != nil || in.Name == "" || in.PrivateKey == "" {
+	var in struct {
+		Name       string `json:"name"`
+		PrivateKey string `json:"private_key"`
+		Passphrase string `json:"passphrase"`
+	}
+	if c.ShouldBindJSON(&in) != nil || strings.TrimSpace(in.Name) == "" || strings.TrimSpace(in.PrivateKey) == "" {
 		fail(c, 400, "invalid_request", "name and private_key required")
 		return
 	}
+	in.Name = strings.TrimSpace(in.Name)
+	in.PrivateKey = strings.TrimSpace(in.PrivateKey)
 	enc, e := encryptSecret(a.cfg.SecretEncryptionKey, in.PrivateKey)
 	if e != nil {
 		fail(c, 400, "encryption_unavailable", e.Error())
