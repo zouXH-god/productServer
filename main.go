@@ -3,9 +3,14 @@ package main
 import (
 	"log"
 	"os"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
+	if err := loadDotEnv(".env"); err != nil {
+		log.Fatalf("load .env: %v", err)
+	}
 	cfg, err := loadConfig()
 	if err != nil {
 		log.Fatal(err)
@@ -34,4 +39,11 @@ func main() {
 	if err := app.router.Run(cfg.HTTPAddr); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func loadDotEnv(path string) error {
+	if err := godotenv.Load(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }

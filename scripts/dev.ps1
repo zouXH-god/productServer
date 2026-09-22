@@ -18,7 +18,12 @@ if (-not (Test-Path (Join-Path $frontend 'node_modules'))) {
     try { npm install } finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
-Write-Host '[dev] Backend: http://localhost:8080'
+$backendAddress = $env:HTTP_ADDR
+if (-not $backendAddress) { $backendAddress = ':8080' }
+if ($backendAddress.StartsWith(':')) { $backendUrl = "http://localhost$backendAddress" }
+elseif ($backendAddress.StartsWith('0.0.0.0:')) { $backendUrl = "http://localhost:$($backendAddress.Substring(8))" }
+else { $backendUrl = "http://$backendAddress" }
+Write-Host "[dev] Backend: $backendUrl"
 Write-Host '[dev] Frontend: http://localhost:5173'
 $backend = Start-Process -FilePath 'go' -ArgumentList @('run', '.') -WorkingDirectory $root -NoNewWindow -PassThru
 Start-Sleep -Seconds 2

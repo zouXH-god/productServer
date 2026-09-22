@@ -10,7 +10,7 @@
 start.bat
 ```
 
-浏览器访问 <http://localhost:5173>。生产环境务必设置安全的 `JWT_SECRET` 和 `ADMIN_PASSWORD`。完整配置见 `.env.example`；程序直接读取环境变量，不自动加载 `.env` 文件。
+浏览器访问 <http://localhost:5173>。生产环境务必设置安全的 `JWT_SECRET` 和 `ADMIN_PASSWORD`。完整配置见 `.env.example`；程序启动时会自动加载当前工作目录中的 `.env` 文件，已存在的系统环境变量优先于文件配置。
 
 ## 项目 Token
 
