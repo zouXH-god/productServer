@@ -605,15 +605,27 @@ func remoteExtractCommand(archive, destination, permission string, keep bool) (s
 		return "", fmt.Errorf("permission must be a 3 or 4 digit octal mode")
 	}
 	lower := strings.ToLower(archive)
+	staging := archive + ".extracting"
 	var extract string
 	if strings.HasSuffix(lower, ".zip") {
-		extract = "unzip -oq " + shellQuote(archive) + " -d " + shellQuote(destination)
+		extract = "unzip -oq " + shellQuote(archive) + " -d " + shellQuote(staging)
 	} else if strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz") {
-		extract = "tar -xzf " + shellQuote(archive) + " -C " + shellQuote(destination)
+		extract = "tar -xzf " + shellQuote(archive) + " -C " + shellQuote(staging)
 	} else {
 		return "", fmt.Errorf("unsupported Action archive format")
 	}
-	commands := []string{"set -e", "mkdir -p " + shellQuote(destination), extract, "chmod -R " + permission + " " + shellQuote(destination)}
+	commands := []string{
+		"set -e",
+		"mkdir -p " + shellQuote(destination),
+		"rm -rf " + shellQuote(staging),
+		"mkdir -p " + shellQuote(staging),
+		"trap " + shellQuote("rm -rf "+shellQuote(staging)) + " EXIT",
+		extract,
+		"chmod -R " + permission + " " + shellQuote(staging),
+		"cp -a " + shellQuote(staging) + "/. " + shellQuote(destination) + "/",
+		"rm -rf " + shellQuote(staging),
+		"trap - EXIT",
+	}
 	if !keep {
 		commands = append(commands, "rm -f "+shellQuote(archive))
 	}

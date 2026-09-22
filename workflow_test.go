@@ -129,10 +129,13 @@ func TestActionArchiveAndRemoteExtractCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"unzip -oq", "'/opt/my app'", "chmod -R 0750", "rm -f"} {
+	for _, expected := range []string{"unzip -oq", "'/opt/my app'", "'/tmp/artifact.zip.extracting'", "chmod -R 0750 '/tmp/artifact.zip.extracting'", "cp -a", "rm -f"} {
 		if !strings.Contains(command, expected) {
 			t.Fatalf("command missing %q: %s", expected, command)
 		}
+	}
+	if strings.Contains(command, "chmod -R 0750 '/opt/my app'") {
+		t.Fatalf("command recursively changes the existing destination: %s", command)
 	}
 	if _, err = remoteExtractCommand("/tmp/artifact.zip", "/opt/app", "9999", false); err == nil {
 		t.Fatal("invalid permission accepted")

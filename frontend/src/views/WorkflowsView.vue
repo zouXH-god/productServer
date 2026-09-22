@@ -699,7 +699,7 @@ function triggerLabel(w: any) {
               v-model="selected.data.config.destination" /></label></template
         ><template v-else-if="selected.data.module === 'sftp_extract'">
           <div class="notice compact-notice">
-            自动使用当前发布中由 Action 上传的唯一 ZIP 或 tar.gz 压缩包。
+            自动使用当前发布中由 Action 上传的唯一 ZIP 或 tar.gz 压缩包。文件先在远端暂存目录解压，权限仅应用于本次解压内容。
           </div>
           <label
             >解压目标目录<input
