@@ -125,6 +125,42 @@ func TestRegistrationJWTRevocationAndProjectMembership(t *testing.T) {
 	}
 }
 
+func TestCopyWorkflowToAnotherProject(t *testing.T) {
+	a, _ := testApp(t)
+	token := loginToken(t, a)
+	createProject := func(name string) uint {
+		w := request(t, a, "POST", "/api/projects", bytes.NewBufferString(fmt.Sprintf(`{"name":%q,"type":"scheduled"}`, name)), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token})
+		if w.Code != 201 {
+			t.Fatalf("create project %s: %d %s", name, w.Code, w.Body.String())
+		}
+		var project Project
+		json.Unmarshal(w.Body.Bytes(), &project)
+		return project.ID
+	}
+	sourceProjectID, targetProjectID := createProject("source"), createProject("target")
+	definition, _ := json.Marshal(WorkflowDefinition{Nodes: []WorkflowNode{{ID: "split", Type: "string_split", Config: map[string]any{"value": "a,b", "delimiter": ","}}}})
+	source := Workflow{ProjectID: sourceProjectID, Name: "deploy", Enabled: true, TriggerType: "any", Definition: string(definition)}
+	if err := a.db.Create(&source).Error; err != nil {
+		t.Fatal(err)
+	}
+	body := fmt.Sprintf(`{"target_project_id":%d,"name":"deploy copy"}`, targetProjectID)
+	w := request(t, a, "POST", fmt.Sprintf("/api/projects/%d/workflows/%d/copy", sourceProjectID, source.ID), bytes.NewBufferString(body), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token})
+	if w.Code != 201 {
+		t.Fatalf("copy workflow: %d %s", w.Code, w.Body.String())
+	}
+	var copied Workflow
+	if err := a.db.Where("project_id=? AND name=?", targetProjectID, "deploy copy").First(&copied).Error; err != nil {
+		t.Fatal(err)
+	}
+	if copied.Enabled || copied.Definition != source.Definition || copied.TriggerType != source.TriggerType {
+		t.Fatalf("unexpected copied workflow: %#v", copied)
+	}
+	w = request(t, a, "POST", fmt.Sprintf("/api/projects/%d/workflows/%d/copy", sourceProjectID, source.ID), bytes.NewBufferString(body), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token})
+	if w.Code != 409 {
+		t.Fatalf("duplicate name status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestAIProviderEncryptionAndCanvasTools(t *testing.T) {
 	a, _ := testApp(t)
 	a.cfg.SecretEncryptionKey = "12345678901234567890123456789012"

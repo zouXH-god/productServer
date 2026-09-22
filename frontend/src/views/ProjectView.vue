@@ -31,6 +31,7 @@ const route = useRoute(),
   releases = ref<any[]>([]),
   workflows = ref<any[]>([]),
   runs = ref<any[]>([]),
+  targetProjects = ref<any[]>([]),
   selected = ref<any>(),
   rotating = ref(false),
   newToken = ref(""),
@@ -39,8 +40,9 @@ const route = useRoute(),
 const members=ref<any[]>([]),memberOpen=ref(false),memberForm=ref({username:"",role:"viewer"});
 const runTarget=ref<any>(),historyTarget=ref<any>(),deleteWorkflowTarget=ref<any>(),releaseID=ref(0),running=ref(false);
 const runDetailOpen=ref(false),runDetailProjectID=ref<number>(),runDetailID=ref<number>();
+const copyTarget=ref<any>(),copyForm=ref({target_project_id:id,name:""});
 async function load() {
-  project.value=await api<any>(`/api/projects/${id}`);[workflows.value,runs.value,members.value]=await Promise.all([api<any[]>(`/api/projects/${id}/workflows`),api<any[]>(`/api/projects/${id}/runs`),api<any[]>(`/api/projects/${id}/members`)]);if(project.value.type==='artifact'){releases.value=await api<any[]>(`/api/projects/${id}/releases`);token.value=await api<any>(`/api/projects/${id}/token`).catch(()=>null)}else{releases.value=[];token.value=null}
+  project.value=await api<any>(`/api/projects/${id}`);[workflows.value,runs.value,members.value,targetProjects.value]=await Promise.all([api<any[]>(`/api/projects/${id}/workflows`),api<any[]>(`/api/projects/${id}/runs`),api<any[]>(`/api/projects/${id}/members`),api<any[]>(`/api/projects`)]);if(project.value.type==='artifact'){releases.value=await api<any[]>(`/api/projects/${id}/releases`);token.value=await api<any>(`/api/projects/${id}/token`).catch(()=>null)}else{releases.value=[];token.value=null}
 }
 const canAdmin=computed(()=>['owner','admin'].includes(project.value?.role)),canDevelop=computed(()=>['owner','admin','developer'].includes(project.value?.role));
 async function addMember(){await api(`/api/projects/${id}/members`,{method:'POST',body:JSON.stringify(memberForm.value)});memberOpen.value=false;memberForm.value={username:'',role:'viewer'};await load()}
@@ -68,6 +70,8 @@ async function remove() {
   router.push("/projects");
 }
 function editWorkflow(flow:any){router.push({path:`/workflows/editor/${id}`,query:{workflow:String(flow.id)}})}
+function prepareCopyWorkflow(flow:any){copyTarget.value=flow;copyForm.value={target_project_id:id,name:`${flow.name} 副本`}}
+async function copyWorkflow(){if(!copyTarget.value)return;running.value=true;try{await api(`/api/projects/${id}/workflows/${copyTarget.value.id}/copy`,{method:'POST',body:JSON.stringify(copyForm.value)});copyTarget.value=undefined;await load()}finally{running.value=false}}
 function prepareRun(flow:any){runTarget.value=flow;releaseID.value=project.value.type==='artifact'?(releases.value[0]?.id||0):0}
 async function runWorkflow(){if(!runTarget.value)return;running.value=true;try{const created=await api<any>(`/api/projects/${id}/workflows/${runTarget.value.id}/runs`,{method:'POST',body:JSON.stringify({release_id:releaseID.value})});runTarget.value=undefined;await router.push({path:'/runs',query:{project:String(id),workflow:String(created.workflow_id||''),run:String(created.id)}})}finally{running.value=false}}
 function openHistory(flow:any){historyTarget.value={flow,runs:runs.value.filter((item:any)=>item.workflow_id===flow.id)}}
@@ -127,7 +131,7 @@ onMounted(load);
         <article v-for="flow in workflows" :key="flow.id" class="card workflow-card project-workflow-card">
           <div class="card-icon"><Workflow/></div>
           <div class="grow"><h3>{{flow.name}}</h3><p>{{flow.enabled?'已启用':'已停用'}} · {{flow.trigger_type==='tag_glob'?`Tag ${flow.trigger_glob}`:flow.trigger_type}}</p><small>更新于 {{new Date(flow.updated_at).toLocaleString()}}</small></div>
-          <div class="workflow-actions"><button v-if="canDevelop" class="btn secondary small-btn" @click="prepareRun(flow)"><Play/>运行</button><button class="btn secondary small-btn" @click="editWorkflow(flow)"><Pencil/>编辑</button><button class="btn secondary small-btn" @click="openHistory(flow)"><History/>历史</button><button v-if="canDevelop" class="icon-btn danger-text" title="删除工作流" @click="deleteWorkflowTarget=flow"><Trash2/></button></div>
+          <div class="workflow-actions"><button v-if="canDevelop" class="btn secondary small-btn" @click="prepareRun(flow)"><Play/>运行</button><button class="btn secondary small-btn" @click="editWorkflow(flow)"><Pencil/>编辑</button><button v-if="canDevelop" class="btn secondary small-btn" @click="prepareCopyWorkflow(flow)"><Copy/>复制</button><button class="btn secondary small-btn" @click="openHistory(flow)"><History/>历史</button><button v-if="canDevelop" class="icon-btn danger-text" title="删除工作流" @click="deleteWorkflowTarget=flow"><Trash2/></button></div>
         </article>
         <EmptyState v-if="!workflows.length" title="暂无工作流" text="创建工作流后可自动处理发布产物。"><router-link v-if="canDevelop" class="btn" :to="`/workflows/editor/${id}?new=1`"><Plus/>创建工作流</router-link></EmptyState>
       </div>
@@ -227,6 +231,7 @@ onMounted(load);
     </div></Modal
   ><Modal :model-value="!!runTarget" title="运行工作流" @update:model-value="runTarget=undefined" :description="runTarget?.name||''"><label v-if="project?.type==='artifact'">发布版本<select v-model.number="releaseID"><option :value="0" disabled>选择版本</option><option v-for="release in releases" :key="release.id" :value="release.id">{{release.version}}</option></select></label><div v-if="project?.type==='artifact'&&!releases.length" class="notice notice-warning">该项目尚无可用发布版本，暂时无法手动运行。</div><div class="panel-actions"><button class="btn secondary" @click="runTarget=undefined">取消</button><button class="btn" :disabled="running||(project?.type==='artifact'&&!releaseID)" @click="runWorkflow"><Play/>{{running?'正在创建…':'开始运行'}}</button></div></Modal
   ><Modal :model-value="!!historyTarget" title="运行历史" @update:model-value="historyTarget=undefined" :description="historyTarget?.flow.name||''"><div class="modal-run-list"><button v-for="item in historyTarget?.runs||[]" :key="item.id" class="run-history-row" @click="viewRun(item)"><span><b>运行 #{{item.id}}</b><small>{{new Date(item.created_at).toLocaleString()}}</small></span><StatusBadge :status="item.status"/><ArrowUpRight/></button><EmptyState v-if="historyTarget&&!historyTarget.runs.length" title="暂无运行记录"/></div></Modal
+  ><Modal :model-value="!!copyTarget" title="复制工作流" @update:model-value="copyTarget=undefined" :description="copyTarget?`复制“${copyTarget.name}”的完整画布配置，不包含运行历史和定时计划。`:''"><label>目标项目<select v-model.number="copyForm.target_project_id"><option v-for="item in targetProjects.filter((item:any)=>['owner','admin','developer'].includes(item.role))" :key="item.id" :value="item.id">{{item.name}}</option></select></label><label>新工作流名称<input v-model.trim="copyForm.name" maxlength="120" placeholder="输入工作流名称"></label><div class="panel-actions"><button class="btn secondary" @click="copyTarget=undefined">取消</button><button class="btn" :disabled="running||!copyForm.target_project_id||!copyForm.name" @click="copyWorkflow"><Copy/>{{running?'正在复制…':'确认复制'}}</button></div></Modal
   ><Modal :model-value="!!deleteWorkflowTarget" title="删除工作流" @update:model-value="deleteWorkflowTarget=undefined" :description="deleteWorkflowTarget?`确认删除“${deleteWorkflowTarget.name}”？此操作不可撤销。`:''"><div class="panel-actions"><button class="btn secondary" @click="deleteWorkflowTarget=undefined">取消</button><button class="btn danger" @click="deleteWorkflow"><Trash2/>删除</button></div></Modal
   ><Modal
     :model-value="!!newToken"

@@ -27,6 +27,7 @@ func (a *App) workflowRoutes(api *gin.RouterGroup) {
 	api.POST("/projects/:id/workflows", a.saveWorkflow)
 	api.GET("/projects/:id/workflows/:workflowId", a.getWorkflow)
 	api.PUT("/projects/:id/workflows/:workflowId", a.saveWorkflow)
+	api.POST("/projects/:id/workflows/:workflowId/copy", a.copyWorkflow)
 	api.DELETE("/projects/:id/workflows/:workflowId", a.deleteWorkflow)
 	api.POST("/projects/:id/workflows/:workflowId/runs", a.manualRun)
 	api.GET("/projects/:id/runs", a.listRuns)
@@ -399,6 +400,55 @@ func redactWorkflowSecrets(d *WorkflowDefinition) {
 			d.Nodes[i].Config["secret_set"] = true
 		}
 	}
+}
+func (a *App) copyWorkflow(c *gin.Context) {
+	pid, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	if _, _, ok = a.projectAccess(c, pid, projectDevelop); !ok {
+		return
+	}
+	var source Workflow
+	if a.db.Where("id=? AND project_id=?", c.Param("workflowId"), pid).First(&source).Error != nil {
+		fail(c, 404, "not_found", "workflow not found")
+		return
+	}
+	var in struct {
+		TargetProjectID uint   `json:"target_project_id"`
+		Name            string `json:"name"`
+	}
+	if c.ShouldBindJSON(&in) != nil || in.TargetProjectID == 0 || strings.TrimSpace(in.Name) == "" {
+		fail(c, 400, "invalid_request", "target_project_id and name required")
+		return
+	}
+	target, _, ok := a.projectAccess(c, in.TargetProjectID, projectDevelop)
+	if !ok {
+		return
+	}
+	name := strings.TrimSpace(in.Name)
+	var duplicate int64
+	a.db.Model(&Workflow{}).Where("project_id=? AND name=?", target.ID, name).Count(&duplicate)
+	if duplicate > 0 {
+		fail(c, 409, "workflow_name_exists", "workflow name already exists in target project")
+		return
+	}
+	var definition WorkflowDefinition
+	if json.Unmarshal([]byte(source.Definition), &definition) != nil || !validateDefinition(definition) {
+		fail(c, 409, "invalid_source_workflow", "source workflow definition is invalid")
+		return
+	}
+	if err := a.validateWorkflowConnections(target.UserID, definition); err != nil {
+		fail(c, 400, "invalid_target_resources", err.Error())
+		return
+	}
+	copy := Workflow{ProjectID: target.ID, Name: name, Enabled: false, TriggerType: source.TriggerType, TriggerGlob: source.TriggerGlob, Definition: source.Definition}
+	if err := a.db.Create(&copy).Error; err != nil {
+		fail(c, 500, "copy_failed", "failed to copy workflow")
+		return
+	}
+	redactWorkflowSecrets(&definition)
+	c.JSON(201, gin.H{"id": copy.ID, "project_id": copy.ProjectID, "name": copy.Name, "enabled": copy.Enabled, "trigger_type": copy.TriggerType, "trigger_glob": copy.TriggerGlob, "definition": definition, "created_at": copy.CreatedAt, "updated_at": copy.UpdatedAt})
 }
 func (a *App) deleteWorkflow(c *gin.Context) {
 	pid, ok := parseID(c, "id")
