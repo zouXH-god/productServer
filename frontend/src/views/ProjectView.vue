@@ -16,6 +16,8 @@ import {
   History,
   GitBranch,
   Download,
+  HardDrive,
+  Settings,
 } from "lucide-vue-next";
 import { api, authDownload } from "../api";
 import Modal from "../components/Modal.vue";
@@ -44,6 +46,10 @@ const members=ref<any[]>([]),memberOpen=ref(false),memberForm=ref({username:"",r
 const runTarget=ref<any>(),historyTarget=ref<any>(),deleteWorkflowTarget=ref<any>(),releaseID=ref(0),running=ref(false);
 const runDetailOpen=ref(false),runDetailProjectID=ref<number>(),runDetailID=ref<number>();
 const copyTarget=ref<any>(),copyForm=ref({target_project_id:id,name:""});
+const capacityOpen=ref(false),capacityValue=ref<number|null>(null),capacityUnit=ref(1024**3),capacitySaving=ref(false);
+function formatBytes(value:number){if(!value)return '0 B';const units=['B','KB','MB','GB','TB'];const index=Math.min(Math.floor(Math.log(value)/Math.log(1024)),units.length-1);return `${(value/1024**index).toFixed(index===0?0:1)} ${units[index]}`}
+function openCapacity(){const bytes=Number(project.value?.max_artifact_bytes||0);capacityUnit.value=bytes>=1024**4?1024**4:bytes>=1024**3?1024**3:1024**2;capacityValue.value=bytes?Number((bytes/capacityUnit.value).toFixed(2)):null;capacityOpen.value=true}
+async function saveCapacity(){capacitySaving.value=true;try{await api(`/api/projects/${id}`,{method:'PUT',body:JSON.stringify({max_artifact_bytes:capacityValue.value?Math.round(capacityValue.value*capacityUnit.value):0})});capacityOpen.value=false;await load()}finally{capacitySaving.value=false}}
 async function load() {
   project.value=await api<any>(`/api/projects/${id}`);[workflows.value,runs.value,members.value,targetProjects.value]=await Promise.all([api<any[]>(`/api/projects/${id}/workflows`),api<any[]>(`/api/projects/${id}/runs`),api<any[]>(`/api/projects/${id}/members`),api<any[]>(`/api/projects`)]);if(project.value.type==='artifact'){releases.value=await api<any[]>(`/api/projects/${id}/releases`);token.value=await api<any>(`/api/projects/${id}/token`).catch(()=>null)}else{releases.value=[];token.value=null}
 }
@@ -115,6 +121,9 @@ onMounted(load);
       <div v-if="project.type==='artifact'" class="card stat-card">
         <Package /><span>发布版本</span><strong>{{ releases.length }}</strong>
       </div>
+      <button v-if="project.type==='artifact'" class="card stat-card capacity-stat" @click="openCapacity">
+        <HardDrive /><span>产物容量</span><strong>{{ formatBytes(project.artifact_bytes || 0) }}</strong><small>{{project.max_artifact_bytes ? `上限 ${formatBytes(project.max_artifact_bytes)}` : '不限容量'}}</small>
+      </button>
       <div class="card stat-card">
         <Workflow /><span>工作流</span><strong>{{ workflows.length }}</strong>
       </div>
@@ -236,6 +245,11 @@ onMounted(load);
       </div>
       </template></Drawer
   ><Modal
+    v-model="capacityOpen"
+    title="产物容量设置"
+    description="达到上限后按发布时间自动清理最早的完整发布版本；最新版本始终保留。"
+    ><label>最大容量<div class="capacity-input"><input v-model.number="capacityValue" type="number" min="0" step="0.1" placeholder="留空或 0 表示不限"><select v-model.number="capacityUnit"><option :value="1024**2">MB</option><option :value="1024**3">GB</option><option :value="1024**4">TB</option></select></div></label><div class="notice">当前已使用 {{formatBytes(project?.artifact_bytes||0)}}。保存更小的容量后会立即尝试清理旧版本。</div><div class="panel-actions"><button class="btn secondary" @click="capacityOpen=false">取消</button><button class="btn" :disabled="capacitySaving||!canAdmin" @click="saveCapacity"><Settings/>{{capacitySaving?'正在保存…':'保存设置'}}</button></div></Modal
+  ><Modal
 	 v-model="memberOpen" title="添加项目成员" description="输入已注册用户名并分配角色。"><label>用户名<input v-model="memberForm.username"></label><label>角色<select v-model="memberForm.role"><option value="admin" :disabled="project?.role!=='owner'">管理员</option><option value="developer">开发者</option><option value="viewer">只读</option></select></label><div class="panel-actions"><button class="btn" @click="addMember">添加成员</button></div></Modal><Modal
     v-model="rotating"
     title="轮换项目 Token"
@@ -282,6 +296,9 @@ onMounted(load);
 .branch-badge svg { width: 13px; height: 13px; }
 .release-access { display: inline-flex; align-items: center; gap: 5px; margin-top: 5px; color: var(--muted); }
 .release-access svg { width: 13px; height: 13px; }
+.capacity-stat { width: 100%; text-align: left; cursor: pointer; color: inherit; font: inherit; }
+.capacity-stat small { color: var(--muted); }
+.capacity-input { display: grid; grid-template-columns: 1fr 88px; gap: 8px; margin-top: 7px; }
 .access-heading { display: flex; align-items: center; justify-content: space-between; margin-top: 22px; }
 .access-heading h3 { margin: 0; }
 .access-heading span { color: var(--muted); font-size: 12px; }

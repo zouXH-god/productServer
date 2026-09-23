@@ -1,0 +1,78 @@
+name: Build and publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: true
+
+      - name: Install and test frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm test
+
+      - name: Build frontend for embedding
+        working-directory: frontend
+        run: npm run build
+
+      - name: Test backend
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./...
+
+      - name: Build release archives
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          set -eu
+          mkdir -p dist staging
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            binary="productserver-${os}-${arch}"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "staging/$binary" .
+            tar -C staging -czf "dist/${binary}.tar.gz" "$binary"
+            rm "staging/$binary"
+          done
+          for arch in amd64 arm64; do
+            binary="productserver-windows-${arch}.exe"
+            GOOS=windows GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "staging/$binary" .
+            (cd staging && zip -q "../dist/productserver-windows-${arch}.zip" "$binary")
+            rm "staging/$binary"
+          done
+          (cd dist && sha256sum productserver-* > SHA256SUMS)
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/productserver-*.tar.gz
+            dist/productserver-*.zip
+            dist/SHA256SUMS

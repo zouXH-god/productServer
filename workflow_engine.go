@@ -42,6 +42,7 @@ func (a *App) dispatchReleaseEvents() {
 			if complete {
 				now := time.Now()
 				a.db.Model(&event).Update("processed_at", now)
+				a.enforceProjectArtifactCapacity(r.ProjectID, r.ID)
 			}
 		}
 	}

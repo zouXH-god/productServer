@@ -15,11 +15,12 @@ type User struct {
 	UpdatedAt          time.Time `json:"updated_at"`
 }
 type Project struct {
-	ID        uint      `json:"id" gorm:"primaryKey"`
-	UserID    uint      `json:"-" gorm:"uniqueIndex:idx_project_owner_name;not null"`
-	Name      string    `json:"name" gorm:"uniqueIndex:idx_project_owner_name;size:150;not null"`
-	Type      string    `json:"type" gorm:"size:16;not null;default:artifact;index"`
-	CreatedAt time.Time `json:"created_at"`
+	ID               uint      `json:"id" gorm:"primaryKey"`
+	UserID           uint      `json:"-" gorm:"uniqueIndex:idx_project_owner_name;not null"`
+	Name             string    `json:"name" gorm:"uniqueIndex:idx_project_owner_name;size:150;not null"`
+	Type             string    `json:"type" gorm:"size:16;not null;default:artifact;index"`
+	MaxArtifactBytes int64     `json:"max_artifact_bytes" gorm:"not null;default:0"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 type ProjectMember struct {
 	ID        uint      `json:"id" gorm:"primaryKey"`

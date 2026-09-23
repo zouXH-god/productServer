@@ -95,6 +95,7 @@ func (a *App) routes() {
 	api.GET("/projects", a.listProjects)
 	api.POST("/projects", a.createProject)
 	api.GET("/projects/:id", a.getProject)
+	api.PUT("/projects/:id", a.updateProject)
 	api.GET("/projects/:id/members", a.listProjectMembers)
 	api.POST("/projects/:id/members", a.addProjectMember)
 	api.PUT("/projects/:id/members/:userId", a.updateProjectMember)
@@ -284,14 +285,15 @@ func (a *App) listProjects(c *gin.Context) {
 	}
 	items := make([]gin.H, 0, len(projects))
 	for _, p := range projects {
-		items = append(items, gin.H{"id": p.ID, "name": p.Name, "type": p.Type, "created_at": p.CreatedAt, "role": roles[p.ID]})
+		items = append(items, gin.H{"id": p.ID, "name": p.Name, "type": p.Type, "max_artifact_bytes": p.MaxArtifactBytes, "created_at": p.CreatedAt, "role": roles[p.ID]})
 	}
 	c.JSON(200, items)
 }
 func (a *App) createProject(c *gin.Context) {
 	var in struct {
-		Name string `json:"name" binding:"required"`
-		Type string `json:"type"`
+		Name             string `json:"name" binding:"required"`
+		Type             string `json:"type"`
+		MaxArtifactBytes int64  `json:"max_artifact_bytes"`
 	}
 	if c.ShouldBindJSON(&in) != nil || strings.TrimSpace(in.Name) == "" {
 		fail(c, 400, "invalid_request", "name is required")
@@ -304,7 +306,14 @@ func (a *App) createProject(c *gin.Context) {
 		fail(c, 400, "invalid_project_type", "type must be artifact or scheduled")
 		return
 	}
-	p := Project{UserID: c.MustGet("userID").(uint), Name: strings.TrimSpace(in.Name), Type: in.Type}
+	if in.MaxArtifactBytes < 0 {
+		fail(c, 400, "invalid_capacity", "max_artifact_bytes cannot be negative")
+		return
+	}
+	if in.Type == "scheduled" {
+		in.MaxArtifactBytes = 0
+	}
+	p := Project{UserID: c.MustGet("userID").(uint), Name: strings.TrimSpace(in.Name), Type: in.Type, MaxArtifactBytes: in.MaxArtifactBytes}
 	var raw string
 	err := a.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&p).Error; err != nil {
@@ -324,7 +333,7 @@ func (a *App) createProject(c *gin.Context) {
 		fail(c, 409, "project_exists", "project name already exists")
 		return
 	}
-	c.JSON(201, gin.H{"id": p.ID, "name": p.Name, "type": p.Type, "role": "owner", "created_at": p.CreatedAt, "token": raw})
+	c.JSON(201, gin.H{"id": p.ID, "name": p.Name, "type": p.Type, "max_artifact_bytes": p.MaxArtifactBytes, "artifact_bytes": int64(0), "role": "owner", "created_at": p.CreatedAt, "token": raw})
 }
 func (a *App) ownedProject(c *gin.Context, id uint) (Project, bool) {
 	p, _, ok := a.projectAccess(c, id, projectView)
@@ -337,8 +346,37 @@ func (a *App) getProject(c *gin.Context) {
 	}
 	p, member, ok := a.projectAccess(c, id, projectView)
 	if ok {
-		c.JSON(200, gin.H{"id": p.ID, "name": p.Name, "type": p.Type, "created_at": p.CreatedAt, "role": member.Role})
+		c.JSON(200, gin.H{"id": p.ID, "name": p.Name, "type": p.Type, "max_artifact_bytes": p.MaxArtifactBytes, "artifact_bytes": a.projectArtifactBytes(id), "created_at": p.CreatedAt, "role": member.Role})
 	}
+}
+
+func (a *App) updateProject(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	project, _, ok := a.projectAccess(c, id, projectAdmin)
+	if !ok {
+		return
+	}
+	if project.Type != "artifact" {
+		fail(c, 400, "invalid_project_type", "scheduled projects do not store artifacts")
+		return
+	}
+	var in struct {
+		MaxArtifactBytes int64 `json:"max_artifact_bytes"`
+	}
+	if c.ShouldBindJSON(&in) != nil || in.MaxArtifactBytes < 0 {
+		fail(c, 400, "invalid_capacity", "max_artifact_bytes must be zero or a positive byte count")
+		return
+	}
+	if err := a.db.Model(&project).Update("max_artifact_bytes", in.MaxArtifactBytes).Error; err != nil {
+		fail(c, 500, "database_error", "unable to update project capacity")
+		return
+	}
+	project.MaxArtifactBytes = in.MaxArtifactBytes
+	a.enforceProjectArtifactCapacity(project.ID, 0)
+	c.JSON(200, gin.H{"max_artifact_bytes": project.MaxArtifactBytes, "artifact_bytes": a.projectArtifactBytes(project.ID)})
 }
 func (a *App) deleteProject(c *gin.Context) {
 	id, ok := parseID(c, "id")
@@ -826,6 +864,7 @@ func (a *App) upload(c *gin.Context) {
 	for _, hook := range a.releaseHooks {
 		hook(release)
 	}
+	a.enforceProjectArtifactCapacity(projectID, release.ID)
 	c.JSON(201, release)
 }
 func artifactFilesEqual(existing, incoming []ArtifactFile) bool {

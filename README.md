@@ -27,7 +27,7 @@ start.bat
 Action 会把匹配的内容确定性打包为一个 ZIP。版本默认使用 Git tag，没有 tag 时使用完整 commit SHA，也可通过 `version` 覆盖。
 
 ```yaml
-- uses: shiran/product-server-action@v1.1
+- uses: zouXH-god/product-server-action@v1.1
   with:
     url: ${{ secrets.ARTIFACT_SERVER_URL }}
     token: ${{ secrets.ARTIFACT_SERVER_TOKEN }}
@@ -95,7 +95,7 @@ curl --get 'https://artifacts.example.com/api/download' \
 
 ## 数据库
 
-- SQLite：`DB_DRIVER=sqlite`，`DB_DSN=productserver.db`
+- SQLite：`DB_DRIVER=sqlite`，`DB_DSN=productserver.db`。SQLite 驱动为纯 Go 实现，构建和运行均不依赖 CGO。
 - MySQL：`DB_DRIVER=mysql`，DSN 示例 `user:pass@tcp(localhost:3306)/productserver?charset=utf8mb4&parseTime=True&loc=Local`
 - PostgreSQL：`DB_DRIVER=postgres`，DSN 示例 `host=localhost user=postgres password=pass dbname=productserver port=5432 sslmode=disable TimeZone=Asia/Shanghai`
 
@@ -133,3 +133,9 @@ Linux/macOS：
 ```
 
 构建产物位于 `bin/`，运行时不需要单独部署前端目录。健康检查为 `/healthz`，就绪检查为 `/readyz`。
+
+Tag 构建 CI 会在 `CGO_ENABLED=0` 下生成 Linux、Windows、macOS 的 amd64/arm64 六种二进制文件，并附带统一的 `SHA256SUMS` 校验文件；所有平台产物会作为同一个发布包上传到 Product Server。
+
+每次向 Gitea 分支或 `v*` Tag 推送后，`github-mirror.yaml` 会将源码同步到 GitHub，并在镜像提交中移除 `.gitea/workflows`。镜像提交会把 README 内的 Action `uses:` 地址固定规范化为 `zouXH-god/product-server-action@版本`。需要在 Gitea 仓库中配置变量 `MIRROR_REPOSITORY=owner/repository`，以及 Secret `MIRROR_FINE_GRAINED_TOKEN`。Fine-grained PAT 只需授予目标 GitHub 仓库的 Contents 读写权限。同步会强制更新同名 GitHub 分支或 Tag，因此目标仓库应仅作为镜像使用。
+
+GitHub 收到 `v*` Tag 后，仅在 GitHub 运行 `.github/workflows/release.yaml`：执行前后端测试，构建 Linux、Windows、macOS 的 amd64/arm64 发布压缩包，生成 `SHA256SUMS`，并使用 GitHub 内置 `GITHUB_TOKEN` 创建 Release 和上传附件。

@@ -42,24 +42,30 @@ jobs:
       - name: Test backend
         run: go test ./...
 
-      - name: Build embedded Linux binary
+      - name: Build embedded multi-platform binaries
         env:
-          GOOS: linux
-          GOARCH: amd64
-          CGO_ENABLED: "1"
+          CGO_ENABLED: "0"
         run: |
           set -eu
           mkdir -p build
-          go build -trimpath -ldflags="-s -w" -o build/productserver-linux-amd64 .
-          sha256sum build/productserver-linux-amd64 > build/productserver-linux-amd64.sha256
+          for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            extension=""
+            if [ "$os" = "windows" ]; then extension=".exe"; fi
+            output="build/productserver-${os}-${arch}${extension}"
+            echo "Building ${os}/${arch}"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "$output" .
+          done
+          (cd build && sha256sum productserver-* > SHA256SUMS)
 
       - name: Save build artifact
         uses: actions/upload-artifact@v3
         with:
-          name: productserver-linux-amd64
+          name: productserver-multi-platform
           path: |
-            build/productserver-linux-amd64
-            build/productserver-linux-amd64.sha256
+            build/productserver-*
+            build/SHA256SUMS
 
       - name: Upload build artifact to Product Server
         uses: https://gitea.s1f.ren/shiran/product-server-action@v1.2
@@ -67,6 +73,6 @@ jobs:
           url: ${{ vars.ARTIFACT_SERVER_URL }}
           token: ${{ vars.ARTIFACT_SERVER_TOKEN }}
           path: |
-            build/productserver-linux-amd64
-            build/productserver-linux-amd64.sha256
-          name: productserver-linux-amd64
+            build/productserver-*
+            build/SHA256SUMS
+          name: productserver-multi-platform

@@ -20,9 +20,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -606,6 +606,45 @@ func TestUniqueTokenRotation(t *testing.T) {
 	b, ct := uploadBody(t, "old", map[string]string{"a": "a"})
 	if w = request(t, a, "POST", "/api/upload", b, map[string]string{"Content-Type": ct, "Authorization": "Bearer " + old}); w.Code != 401 {
 		t.Fatalf("old token status=%d", w.Code)
+	}
+}
+
+func TestProjectArtifactCapacityRemovesOldestRelease(t *testing.T) {
+	a, cfg := testApp(t)
+	jwt := loginToken(t, a)
+	pid, token := createProjectAndToken(t, a, jwt)
+	w := request(t, a, "PUT", "/api/projects/"+itoa(pid), bytes.NewBufferString(`{"max_artifact_bytes":8}`), map[string]string{"Authorization": "Bearer " + jwt, "Content-Type": "application/json"})
+	if w.Code != 200 {
+		t.Fatalf("set capacity=%d %s", w.Code, w.Body.String())
+	}
+	b, ct := uploadBody(t, "old", map[string]string{"old.zip": "123456"})
+	w = request(t, a, "POST", "/api/upload", b, map[string]string{"Content-Type": ct, "Authorization": "Bearer " + token})
+	if w.Code != 201 {
+		t.Fatalf("old upload=%d %s", w.Code, w.Body.String())
+	}
+	var old Release
+	if err := json.Unmarshal(w.Body.Bytes(), &old); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	a.db.Model(&ReleaseEvent{}).Where("release_id = ?", old.ID).Update("processed_at", now)
+	b, ct = uploadBody(t, "new", map[string]string{"new.zip": "abcdef"})
+	w = request(t, a, "POST", "/api/upload", b, map[string]string{"Content-Type": ct, "Authorization": "Bearer " + token})
+	if w.Code != 201 {
+		t.Fatalf("new upload=%d %s", w.Code, w.Body.String())
+	}
+	var oldCount, newCount int64
+	a.db.Model(&Release{}).Where("id = ?", old.ID).Count(&oldCount)
+	a.db.Model(&Release{}).Where("project_id = ? AND version = ?", pid, "new").Count(&newCount)
+	if oldCount != 0 || newCount != 1 {
+		t.Fatalf("unexpected retained releases: old=%d new=%d", oldCount, newCount)
+	}
+	if _, err := os.Stat(filepath.Join(cfg.StorageDir, itoa(pid), itoa(old.ID))); !os.IsNotExist(err) {
+		t.Fatalf("old release directory was not removed: %v", err)
+	}
+	w = request(t, a, "GET", "/api/projects/"+itoa(pid), nil, map[string]string{"Authorization": "Bearer " + jwt})
+	if w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"artifact_bytes":6`)) {
+		t.Fatalf("project usage=%d %s", w.Code, w.Body.String())
 	}
 }
 func TestTokenDownloadValidationAndEncoding(t *testing.T) {
