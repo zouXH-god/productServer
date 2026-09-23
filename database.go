@@ -50,7 +50,7 @@ func migrateAndBootstrap(db *gorm.DB, c Config) error {
 			}
 		}
 	}
-	if err := db.AutoMigrate(&User{}, &Project{}, &ProjectMember{}, &SystemSetting{}, &ProjectToken{}, &Release{}, &ArtifactFile{}, &SSHCredential{}, &SSHConnection{}, &Workflow{}, &WorkflowSchedule{}, &ScheduleEvent{}, &ReleaseEvent{}, &WorkflowRun{}, &WorkflowNodeRun{}, &WorkflowLock{}, &ExecutionSlot{}, &EnvironmentVariable{}, &AIProvider{}, &AIConversation{}, &AIMessage{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &Project{}, &ProjectMember{}, &SystemSetting{}, &ProjectToken{}, &Release{}, &ArtifactFile{}, &SSHCredential{}, &SSHConnection{}, &Workflow{}, &WorkflowRevision{}, &WorkflowSchedule{}, &ScheduleEvent{}, &ReleaseEvent{}, &WorkflowRun{}, &WorkflowNodeRun{}, &WorkflowLock{}, &ExecutionSlot{}, &EnvironmentVariable{}, &AIProvider{}, &AIConversation{}, &AIMessage{}); err != nil {
 		return err
 	}
 	db.Model(&Project{}).Where("type='' OR type IS NULL").Update("type", "artifact")

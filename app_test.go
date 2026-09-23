@@ -161,6 +161,45 @@ func TestCopyWorkflowToAnotherProject(t *testing.T) {
 	}
 }
 
+func TestWorkflowSaveCreatesHistory(t *testing.T) {
+	a, _ := testApp(t)
+	token := loginToken(t, a)
+	w := request(t, a, "POST", "/api/projects", bytes.NewBufferString(`{"name":"history","type":"scheduled"}`), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token})
+	if w.Code != 201 {
+		t.Fatalf("project: %d %s", w.Code, w.Body.String())
+	}
+	var project Project
+	json.Unmarshal(w.Body.Bytes(), &project)
+	payload := `{"name":"deploy","enabled":true,"trigger_type":"any","trigger_glob":"","definition":{"nodes":[{"id":"split","type":"string_split","config":{"value":"a,b","separator":","}}],"edges":[]}}`
+	w = request(t, a, "POST", fmt.Sprintf("/api/projects/%d/workflows", project.ID), bytes.NewBufferString(payload), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token})
+	if w.Code != 201 {
+		t.Fatalf("create workflow: %d %s", w.Code, w.Body.String())
+	}
+	var workflow Workflow
+	json.Unmarshal(w.Body.Bytes(), &workflow)
+	payload = strings.Replace(payload, `"name":"deploy"`, `"name":"deploy updated"`, 1)
+	w = request(t, a, "PUT", fmt.Sprintf("/api/projects/%d/workflows/%d", project.ID, workflow.ID), bytes.NewBufferString(payload), map[string]string{"Content-Type": "application/json", "Authorization": "Bearer " + token})
+	if w.Code != 200 {
+		t.Fatalf("update workflow: %d %s", w.Code, w.Body.String())
+	}
+	w = request(t, a, "GET", fmt.Sprintf("/api/projects/%d/workflows/%d/history", project.ID, workflow.ID), nil, map[string]string{"Authorization": "Bearer " + token})
+	if w.Code != 200 {
+		t.Fatalf("history: %d %s", w.Code, w.Body.String())
+	}
+	var history []struct {
+		ID   uint   `json:"id"`
+		Name string `json:"name"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &history)
+	if len(history) != 2 || history[0].Name != "deploy updated" || history[1].Name != "deploy" {
+		t.Fatalf("unexpected history: %#v", history)
+	}
+	w = request(t, a, "GET", fmt.Sprintf("/api/projects/%d/workflows/%d/history/%d", project.ID, workflow.ID, history[1].ID), nil, map[string]string{"Authorization": "Bearer " + token})
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"name":"deploy"`) || !strings.Contains(w.Body.String(), `"nodes"`) {
+		t.Fatalf("revision: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestAIProviderEncryptionAndCanvasTools(t *testing.T) {
 	a, _ := testApp(t)
 	a.cfg.SecretEncryptionKey = "12345678901234567890123456789012"

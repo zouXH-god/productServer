@@ -369,6 +369,9 @@ func (a *App) deleteProject(c *gin.Context) {
 		if err := tx.Where("project_id=?", id).Delete(&WorkflowSchedule{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("project_id=?", id).Delete(&WorkflowRevision{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("project_id=?", id).Delete(&ProjectMember{}).Error; err != nil {
 			return err
 		}

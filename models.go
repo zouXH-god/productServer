@@ -92,6 +92,19 @@ type Workflow struct {
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
+type WorkflowRevision struct {
+	ID          uint      `json:"id" gorm:"primaryKey"`
+	ProjectID   uint      `json:"project_id" gorm:"index;not null"`
+	WorkflowID  uint      `json:"workflow_id" gorm:"index;not null"`
+	UserID      uint      `json:"user_id" gorm:"index;not null"`
+	Name        string    `json:"name"`
+	Enabled     bool      `json:"enabled"`
+	TriggerType string    `json:"trigger_type"`
+	TriggerGlob string    `json:"trigger_glob"`
+	Definition  string    `json:"-" gorm:"type:text"`
+	CreatedAt   time.Time `json:"created_at" gorm:"index"`
+	User        User      `json:"user,omitempty" gorm:"foreignKey:UserID"`
+}
 type ReleaseEvent struct {
 	ID          uint `gorm:"primaryKey"`
 	ReleaseID   uint `gorm:"uniqueIndex"`

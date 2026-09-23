@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 func (a *App) workflowRoutes(api *gin.RouterGroup) {
@@ -28,6 +30,8 @@ func (a *App) workflowRoutes(api *gin.RouterGroup) {
 	api.POST("/projects/:id/workflows", a.saveWorkflow)
 	api.GET("/projects/:id/workflows/:workflowId", a.getWorkflow)
 	api.PUT("/projects/:id/workflows/:workflowId", a.saveWorkflow)
+	api.GET("/projects/:id/workflows/:workflowId/history", a.listWorkflowHistory)
+	api.GET("/projects/:id/workflows/:workflowId/history/:revisionId", a.getWorkflowRevision)
 	api.POST("/projects/:id/workflows/:workflowId/copy", a.copyWorkflow)
 	api.DELETE("/projects/:id/workflows/:workflowId", a.deleteWorkflow)
 	api.POST("/projects/:id/workflows/:workflowId/runs", a.manualRun)
@@ -250,11 +254,12 @@ func (a *App) sshClient(id, uid uint) (*ssh.Client, error) {
 }
 
 type workflowPayload struct {
-	Name        string             `json:"name"`
-	Enabled     bool               `json:"enabled"`
-	TriggerType string             `json:"trigger_type"`
-	TriggerGlob string             `json:"trigger_glob"`
-	Definition  WorkflowDefinition `json:"definition"`
+	Name           string             `json:"name"`
+	Enabled        bool               `json:"enabled"`
+	TriggerType    string             `json:"trigger_type"`
+	TriggerGlob    string             `json:"trigger_glob"`
+	BaseRevisionID uint               `json:"base_revision_id"`
+	Definition     WorkflowDefinition `json:"definition"`
 }
 
 func (a *App) listWorkflows(c *gin.Context) {
@@ -331,6 +336,14 @@ func (a *App) saveWorkflow(c *gin.Context) {
 		w.TriggerGlob = p.TriggerGlob
 		status = 200
 	}
+	if p.BaseRevisionID != 0 && w.ID != 0 {
+		var revision WorkflowRevision
+		if a.db.Where("id=? AND workflow_id=? AND project_id=?", p.BaseRevisionID, w.ID, pid).First(&revision).Error != nil {
+			fail(c, 400, "invalid_revision", "workflow revision not found")
+			return
+		}
+		_ = json.Unmarshal([]byte(revision.Definition), &old)
+	}
 	oldSecrets := map[string]string{}
 	for _, n := range old.Nodes {
 		if n.Type == "http_webhook" {
@@ -358,7 +371,17 @@ func (a *App) saveWorkflow(c *gin.Context) {
 	}
 	data, _ := json.Marshal(p.Definition)
 	w.Definition = string(data)
-	a.db.Save(&w)
+	revision := WorkflowRevision{ProjectID: pid, UserID: c.MustGet("userID").(uint), Name: w.Name, Enabled: w.Enabled, TriggerType: w.TriggerType, TriggerGlob: w.TriggerGlob, Definition: w.Definition}
+	if err := a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(&w).Error; err != nil {
+			return err
+		}
+		revision.WorkflowID = w.ID
+		return tx.Create(&revision).Error
+	}); err != nil {
+		fail(c, 500, "save_failed", "unable to save workflow")
+		return
+	}
 	redactWorkflowSecrets(&p.Definition)
 	c.JSON(status, gin.H{"id": w.ID, "project_id": w.ProjectID, "name": w.Name, "enabled": w.Enabled, "trigger_type": w.TriggerType, "trigger_glob": w.TriggerGlob, "definition": p.Definition, "created_at": w.CreatedAt, "updated_at": w.UpdatedAt})
 }
@@ -404,6 +427,54 @@ func (a *App) getWorkflow(c *gin.Context) {
 	json.Unmarshal([]byte(w.Definition), &d)
 	redactWorkflowSecrets(&d)
 	c.JSON(200, gin.H{"id": w.ID, "name": w.Name, "enabled": w.Enabled, "trigger_type": w.TriggerType, "trigger_glob": w.TriggerGlob, "definition": d})
+}
+func (a *App) workflowHistoryContext(c *gin.Context) (uint, Workflow, bool) {
+	pid, ok := parseID(c, "id")
+	if !ok {
+		return 0, Workflow{}, false
+	}
+	if _, _, ok = a.projectAccess(c, pid, projectView); !ok {
+		return pid, Workflow{}, false
+	}
+	var workflow Workflow
+	if a.db.Where("id=? AND project_id=?", c.Param("workflowId"), pid).First(&workflow).Error != nil {
+		fail(c, 404, "not_found", "workflow not found")
+		return pid, workflow, false
+	}
+	return pid, workflow, true
+}
+func (a *App) listWorkflowHistory(c *gin.Context) {
+	pid, workflow, ok := a.workflowHistoryContext(c)
+	if !ok {
+		return
+	}
+	var revisions []WorkflowRevision
+	a.db.Preload("User").Where("project_id=? AND workflow_id=?", pid, workflow.ID).Order("id desc").Find(&revisions)
+	items := make([]gin.H, 0, len(revisions))
+	for _, revision := range revisions {
+		var definition WorkflowDefinition
+		_ = json.Unmarshal([]byte(revision.Definition), &definition)
+		items = append(items, gin.H{"id": revision.ID, "name": revision.Name, "enabled": revision.Enabled, "trigger_type": revision.TriggerType, "trigger_glob": revision.TriggerGlob, "node_count": len(definition.Nodes), "edge_count": len(definition.Edges), "created_at": revision.CreatedAt, "created_by": revision.User.Username})
+	}
+	c.JSON(200, items)
+}
+func (a *App) getWorkflowRevision(c *gin.Context) {
+	pid, workflow, ok := a.workflowHistoryContext(c)
+	if !ok {
+		return
+	}
+	var revision WorkflowRevision
+	if a.db.Preload("User").Where("id=? AND project_id=? AND workflow_id=?", c.Param("revisionId"), pid, workflow.ID).First(&revision).Error != nil {
+		fail(c, 404, "not_found", "workflow revision not found")
+		return
+	}
+	var definition WorkflowDefinition
+	if json.Unmarshal([]byte(revision.Definition), &definition) != nil {
+		fail(c, 500, "invalid_revision", "workflow revision is invalid")
+		return
+	}
+	redactWorkflowSecrets(&definition)
+	c.JSON(200, gin.H{"id": revision.ID, "workflow_id": revision.WorkflowID, "name": revision.Name, "enabled": revision.Enabled, "trigger_type": revision.TriggerType, "trigger_glob": revision.TriggerGlob, "definition": definition, "created_at": revision.CreatedAt, "created_by": revision.User.Username})
 }
 func redactWorkflowSecrets(d *WorkflowDefinition) {
 	for i := range d.Nodes {
@@ -475,6 +546,7 @@ func (a *App) deleteWorkflow(c *gin.Context) {
 		a.db.Where("schedule_id=?", schedule.ID).Delete(&ScheduleEvent{})
 		a.db.Delete(&schedule)
 	}
+	a.db.Where("workflow_id=? AND project_id=?", c.Param("workflowId"), pid).Delete(&WorkflowRevision{})
 	a.db.Where("id=? AND project_id=?", c.Param("workflowId"), pid).Delete(&Workflow{})
 	c.Status(204)
 }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // @ts-nocheck
-import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
 import { Handle, Position, VueFlow, useVueFlow } from "@vue-flow/core";
 import "@vue-flow/core/dist/style.css";
 import "@vue-flow/core/dist/theme-default.css";
@@ -30,6 +30,7 @@ import {
   FileSearch,
   ServerCog,
   FolderKanban,
+  History as HistoryIcon,
 } from "lucide-vue-next";
 import { api } from "../api";
 import Modal from "../components/Modal.vue";
@@ -49,9 +50,12 @@ const route = useRoute(),
   nodes = ref<any[]>([]),
   edges = ref<any[]>([]),
   selected = ref<any>(),
+  nodeEditorOpen = ref(false),
   selectedEdge = ref<any>(),
   createOpen = ref(false),
   triggerOpen = ref(false),
+  historyOpen = ref(false),
+  leaveOpen = ref(false),
   runOpen = ref(false),
   releaseID = ref(0),
   previewReleaseID = ref(0),
@@ -63,6 +67,9 @@ const route = useRoute(),
   error = ref("");
 const project=ref<any>();
 const triggerDraft=ref({type:"any",glob:"v*"});
+const workflowHistory=ref<any[]>([]),historyPreview=ref<any>(),baseRevisionID=ref(0);
+const trackingChanges=ref(false);
+let leaveResolver:((value:boolean)=>void)|undefined;
 const canDevelop=computed(()=>['owner','admin','developer'].includes(project.value?.role));
 const router = useRouter();
 const { addEdges, fitView } = useVueFlow();
@@ -227,7 +234,9 @@ function choose(e: any) {
   edges.value = edges.value.map((edge) => ({ ...edge, selected: false }));
   selected.value = e.node;
 }
+function editNode(e:any){choose(e);nodeEditorOpen.value=true}
 function chooseEdge(e: any) {
+  nodeEditorOpen.value=false;
   selected.value = undefined;
   selectedEdge.value = e.edge;
   edges.value = edges.value.map((edge) => ({
@@ -236,6 +245,7 @@ function chooseEdge(e: any) {
   }));
 }
 function clearSelection() {
+  nodeEditorOpen.value=false;
   selected.value = undefined;
   selectedEdge.value = undefined;
   edges.value = edges.value.map((edge) => ({ ...edge, selected: false }));
@@ -245,6 +255,7 @@ function restore(raw: string) {
   nodes.value = x.nodes;
   edges.value = x.edges;
   selected.value = undefined;
+  nodeEditorOpen.value=false;
 }
 function undo() {
   if (!history.value.length) return;
@@ -273,6 +284,7 @@ function removeSelected() {
     );
   }
   clearSelection();
+  nodeEditorOpen.value=false;
   saved.value = false;
 }
 function duplicate() {
@@ -300,41 +312,37 @@ function startEditor() {
   future.value = [];
   createOpen.value = false;
   saved.value = false;
+  trackingChanges.value=true;
+}
+function applyDefinition(definition:any,prefix="e"){
+  nodes.value=(definition.nodes||[]).map((n:any)=>({id:n.id,label:modules[n.type]?.name||n.type,position:n.position||{x:100,y:100},data:{module:n.type,config:normalizeNodeConfig(n.type,n.config),timeout_seconds:n.timeout_seconds||600,retries:n.retries||0}}));
+  edges.value=(definition.edges||[]).map((e:any,i:number)=>({id:`${prefix}${i}_${Date.now()}`,source:e.from,target:e.to,condition:e.condition||"success",label:e.condition&&e.condition!=="success"?e.condition:""}));
 }
 async function edit(id: number) {
+  trackingChanges.value=false;
   const w = await api<any>(`/api/projects/${pid}/workflows/${id}`);
   editing.value = id;
   name.value = w.name;
   enabled.value = w.enabled;
   triggerType.value = w.trigger_type;
   triggerGlob.value = w.trigger_glob;
-  nodes.value = w.definition.nodes.map((n: any) => ({
-    id: n.id,
-    label: modules[n.type]?.name || n.type,
-    position: n.position || { x: 100, y: 100 },
-    data: {
-      module: n.type,
-      config: normalizeNodeConfig(n.type,n.config),
-      timeout_seconds: n.timeout_seconds,
-      retries: n.retries,
-    },
-  }));
-  edges.value = w.definition.edges.map((e: any, i: number) => ({
-    id: `e${i}`,
-    source: e.from,
-    target: e.to,
-    condition:e.condition||"success",
-    label:e.condition&&e.condition!=="success"?e.condition:"",
-  }));
+  applyDefinition(w.definition,"e");
   history.value = [];
   future.value = [];
+  baseRevisionID.value=0;
   saved.value = true;
+  await nextTick();trackingChanges.value=true;
 }
+async function openWorkflowHistory(){if(!editing.value)return;workflowHistory.value=await api(`/api/projects/${pid}/workflows/${editing.value}/history`);historyPreview.value=undefined;historyOpen.value=true;if(workflowHistory.value.length)await viewWorkflowRevision(workflowHistory.value[0])}
+async function viewWorkflowRevision(item:any){historyPreview.value=await api(`/api/projects/${pid}/workflows/${editing.value}/history/${item.id}`)}
+function applyWorkflowRevision(){if(!historyPreview.value)return;checkpoint();name.value=historyPreview.value.name;enabled.value=historyPreview.value.enabled;triggerType.value=historyPreview.value.trigger_type;triggerGlob.value=historyPreview.value.trigger_glob;applyDefinition(historyPreview.value.definition,"revision");baseRevisionID.value=historyPreview.value.id;saved.value=false;historyOpen.value=false;nextTick(()=>fitView({padding:.2}))}
+const historyPreviewNodes=computed(()=>(historyPreview.value?.definition?.nodes||[]).map((n:any)=>({id:n.id,position:n.position||{x:100,y:100},data:{label:modules[n.type]?.name||n.type},sourcePosition:Position.Right,targetPosition:Position.Left})));
+const historyPreviewEdges=computed(()=>(historyPreview.value?.definition?.edges||[]).map((e:any,i:number)=>({id:`history-${i}`,source:e.from,target:e.to,label:e.condition&&e.condition!=="success"?e.condition:""})));
 async function save() {
   error.value = "";
   if (!name.value.trim() || !nodes.value.length) {
     error.value = "请填写名称并至少添加一个模块";
-    return;
+    return false;
   }
   const definition = {
     nodes: nodes.value.map((n) => ({
@@ -359,15 +367,19 @@ async function save() {
           enabled: enabled.value,
           trigger_type: triggerType.value,
           trigger_glob: triggerGlob.value,
+          base_revision_id: baseRevisionID.value||undefined,
           definition,
         }),
       },
     );
     editing.value = w.id || editing.value;
+    baseRevisionID.value=0;
     saved.value = true;
     await load();
+    return true;
   } catch (e: any) {
     error.value = e.message;
+    return false;
   }
 }
 async function run() {
@@ -378,11 +390,28 @@ async function run() {
   runOpen.value = false;
   await router.push({path:"/runs",query:{project:String(pid),run:String(created.id)}});
 }
+watch([name,enabled,triggerType,triggerGlob,nodes,edges],()=>{if(trackingChanges.value)saved.value=false},{deep:true});
 function inputFocus() {
   return ["INPUT", "TEXTAREA", "SELECT"].includes(
     document.activeElement?.tagName || "",
   );
 }
+function beforeUnload(event:BeforeUnloadEvent){if(!saved.value){event.preventDefault();event.returnValue=""}}
+async function resolveLeave(action:"save"|"discard"|"cancel"){
+  const resolve=leaveResolver;leaveResolver=undefined;leaveOpen.value=false;
+  if(!resolve)return;
+  if(action==="cancel"){resolve(false);return}
+  if(action==="save"){
+    const ok=await save();
+    if(!ok){resolve(false);return}
+  }
+  resolve(true);
+}
+onBeforeRouteLeave(()=>{
+  if(saved.value)return true;
+  leaveOpen.value=true;
+  return new Promise<boolean>(resolve=>{leaveResolver=resolve});
+});
 function key(e: KeyboardEvent) {
   if (!editing.value && editing.value !== 0) return;
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
@@ -411,9 +440,10 @@ onMounted(async () => {
 	if (route.query.new === "1" && canDevelop.value) beginCreate();
 	else if (Number(route.query.workflow)) await edit(Number(route.query.workflow));
 	else { await router.replace("/workflows"); return; }
-	document.addEventListener("keydown", key);
+	document.addEventListener("keydown", key, true);
+	window.addEventListener("beforeunload",beforeUnload);
 });
-onUnmounted(() => document.removeEventListener("keydown", key));
+onUnmounted(() => {document.removeEventListener("keydown", key, true);window.removeEventListener("beforeunload",beforeUnload);if(leaveResolver)leaveResolver(false)});
 const moduleInfo = computed(() =>
   selected.value ? modules[selected.value.data.module] : null,
 );
@@ -431,8 +461,7 @@ const canvasDefinition = computed(() => ({
   edges: edges.value.map((e) => ({ from:e.source, to:e.target, condition:e.condition||"success" })),
 }));
 function applyAICanvas(canvas:any){
-  nodes.value=(canvas.nodes||[]).map((n:any)=>({id:n.id,label:modules[n.type]?.name||n.type,position:n.position||{x:100,y:100},data:{module:n.type,config:normalizeNodeConfig(n.type,n.config),timeout_seconds:n.timeout_seconds||600,retries:n.retries||0}}));
-  edges.value=(canvas.edges||[]).map((e:any,i:number)=>({id:`ai_e_${i}_${Date.now()}`,source:e.from,target:e.to,condition:e.condition||"success",label:e.condition&&e.condition!=="success"?e.condition:""}));
+  applyDefinition(canvas,"ai_e_");
   saved.value=false; nextTick(()=>fitView({padding:.2}));
 }
 </script>
@@ -455,6 +484,7 @@ function applyAICanvas(canvas:any){
         ><input v-model="enabled" type="checkbox" />启用</label
       >
 	  <button v-if="project?.type==='artifact'" class="trigger-editor-button" type="button" title="编辑上传触发条件" @click="openTriggerEditor"><GitBranch/><span><small>触发条件</small><b>{{triggerLabel}}</b></span></button>
+	  <button v-if="editing" class="btn secondary history-button" type="button" title="查看保存历史" @click="openWorkflowHistory"><HistoryIcon/>历史</button>
 	  <div v-if="project?.type==='artifact'" class="release-preview-control">
         <select v-model.number="previewReleaseID" @change="loadPreview">
           <option :value="0">选择预览版本</option>
@@ -518,8 +548,10 @@ function applyAICanvas(canvas:any){
           v-model:nodes="nodes"
           v-model:edges="edges"
           fit-view-on-init
+          :delete-key-code="null"
           @connect="connect"
           @node-click="choose"
+          @node-double-click="editNode"
           @edge-click="chooseEdge"
           @pane-click="clearSelection"
           ><template #node-default="p"
@@ -544,6 +576,7 @@ function applyAICanvas(canvas:any){
     </div>
     <AIChatPanel :project-id="pid" :workflow-id="editing||undefined" :workflow-name="name" :trigger-type="triggerType" :trigger-glob="triggerGlob" :canvas="canvasDefinition" @checkpoint="checkpoint" @apply="applyAICanvas" />
   </div>
+  <Drawer v-model="historyOpen" wide title="工作流保存历史"><div class="workflow-history-layout"><aside class="workflow-history-list"><button v-for="item in workflowHistory" :key="item.id" :class="{active:historyPreview?.id===item.id}" @click="viewWorkflowRevision(item)"><span><b>{{new Date(item.created_at).toLocaleString()}}</b><small>{{item.created_by||'未知用户'}} · {{item.node_count}} 个节点 · {{item.edge_count}} 条连接</small></span><em>#{{item.id}}</em></button><EmptyState v-if="!workflowHistory.length" title="暂无保存历史"/></aside><section v-if="historyPreview" class="workflow-history-preview"><header><div><h3>{{historyPreview.name}}</h3><p>{{new Date(historyPreview.created_at).toLocaleString()}} · {{historyPreview.created_by||'未知用户'}}</p></div><button v-if="canDevelop" class="btn" @click="applyWorkflowRevision">应用到当前画布</button></header><div class="history-meta"><span>{{historyPreview.enabled?'已启用':'已停用'}}</span><span>{{historyPreview.trigger_type==='branch_glob'?`分支 ${historyPreview.trigger_glob}`:historyPreview.trigger_type==='tag_glob'?`Tag ${historyPreview.trigger_glob}`:historyPreview.trigger_type}}</span></div><div class="workflow-history-canvas"><VueFlow :nodes="historyPreviewNodes" :edges="historyPreviewEdges" fit-view-on-init :nodes-draggable="false" :nodes-connectable="false" :elements-selectable="false"><template #node-default="previewNode"><div class="history-preview-node"><component :is="modules[historyPreview.definition.nodes.find((item:any)=>item.id===previewNode.id)?.type]?.icon"/><span><b>{{previewNode.data.label}}</b><small>{{previewNode.id}}</small></span></div></template></VueFlow></div><details class="code-disclosure"><summary>查看历史 JSON</summary><pre>{{JSON.stringify(historyPreview.definition,null,2)}}</pre></details></section></div></Drawer>
   <Drawer v-model="previewOpen" title="版本文件预览">
     <div class="release-preview-summary">
       <b>{{
@@ -557,9 +590,8 @@ function applyAICanvas(canvas:any){
     </div>
   </Drawer>
   <Drawer
-    :model-value="!!selected"
+    v-model="nodeEditorOpen"
     :title="moduleInfo?.name || '节点配置'"
-    @update:model-value="selected = undefined"
     ><template v-if="selected"
       ><p class="muted">{{ moduleInfo?.desc }}</p>
       <label>节点 ID<input v-model="selected.id" /></label>
@@ -760,6 +792,7 @@ function applyAICanvas(canvas:any){
       ><button class="btn" @click="startEditor">进入编辑器</button>
     </div></Modal
   ><Modal v-model="triggerOpen" title="编辑触发条件" description="保存工作流后，新上传的产物会按此条件自动触发。"><label>触发条件<select v-model="triggerDraft.type"><option value="any">任意版本</option><option value="tag">仅 Tag</option><option value="commit">所有分支 Commit</option><option value="tag_glob">Tag 匹配</option><option value="branch_glob">分支匹配</option></select></label><label v-if="['tag_glob','branch_glob'].includes(triggerDraft.type)">{{triggerDraft.type==='branch_glob'?'分支 glob':'Tag glob'}}<input v-model="triggerDraft.glob" :placeholder="triggerDraft.type==='branch_glob'?'main 或 feature/*':'v* 或 release-*'"></label><div v-if="triggerDraft.type==='branch_glob'" class="notice notice-warning">仅匹配带分支标识的 Commit 产物；Tag 产物不会触发。</div><div class="panel-actions"><button class="btn secondary" @click="triggerOpen=false">取消</button><button class="btn" :disabled="['tag_glob','branch_glob'].includes(triggerDraft.type)&&!triggerDraft.glob.trim()" @click="applyTrigger">应用条件</button></div></Modal
+  ><Modal :model-value="leaveOpen" title="存在未保存的更改" description="离开后，当前画布上的更改将丢失。" locked><div class="panel-actions leave-actions"><button class="btn secondary" @click="resolveLeave('cancel')">取消</button><button class="btn danger-ghost" @click="resolveLeave('discard')">放弃更改</button><button class="btn" @click="resolveLeave('save')"><Save/>保存并离开</button></div></Modal
   ><Modal
     v-model="runOpen"
     title="手动运行"
@@ -792,9 +825,36 @@ function applyAICanvas(canvas:any){
 .trigger-editor-button > span { display: grid; gap: 1px; }
 .trigger-editor-button small { font-size: 8px; }
 .trigger-editor-button b { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.history-button { white-space: nowrap; }
+.workflow-history-layout { display: grid; grid-template-columns: 280px minmax(0,1fr); gap: 18px; min-height: 620px; }
+.workflow-history-list { display: grid; align-content: start; gap: 7px; padding-right: 14px; border-right: 1px solid var(--border); }
+.workflow-history-list > button { width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: #fff; display: flex; gap: 8px; text-align: left; cursor: pointer; }
+.workflow-history-list > button:hover, .workflow-history-list > button.active { border-color: #888; background: var(--surface-2); }
+.workflow-history-list button span { min-width: 0; display: grid; gap: 4px; flex: 1; }
+.workflow-history-list button b { font-size: 12px; }
+.workflow-history-list button small { font-size: 9px; }
+.workflow-history-list button em { color: var(--muted); font-size: 10px; font-style: normal; }
+.workflow-history-preview { min-width: 0; }
+.workflow-history-preview > header { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
+.workflow-history-preview h3, .workflow-history-preview p { margin: 0; }
+.workflow-history-preview p { margin-top: 4px; color: var(--muted); font-size: 11px; }
+.history-meta { display: flex; gap: 7px; margin-bottom: 12px; }
+.history-meta span { padding: 4px 8px; border-radius: 999px; background: var(--surface-2); font-size: 10px; }
+.workflow-history-canvas { height: 430px; border: 1px solid var(--border); border-radius: 15px; overflow: hidden; background: var(--surface-2); }
+.history-preview-node { min-width: 150px; padding: 10px; border: 1px solid #ccc; border-radius: 12px; background: #fff; display: flex; align-items: center; gap: 8px; }
+.history-preview-node > svg { width: 17px; }
+.history-preview-node span { display: grid; gap: 2px; }
+.history-preview-node small { font-size: 8px; }
+.leave-actions { flex-wrap: wrap; }
 @media (max-width: 1100px) {
   .editor-project { min-width: 42px; width: 42px; padding: 0 5px; border-right: 0; }
   .editor-project > span:last-child { display: none; }
   .trigger-editor-button > span { display: none; }
+}
+@media (max-width: 760px) {
+  .workflow-history-layout { grid-template-columns: 1fr; }
+  .workflow-history-list { max-height: 190px; overflow: auto; border-right: 0; border-bottom: 1px solid var(--border); padding: 0 0 12px; }
+  .workflow-history-canvas { height: 330px; }
+  .history-button { width: 38px; padding: 0; font-size: 0; }
 }
 </style>
