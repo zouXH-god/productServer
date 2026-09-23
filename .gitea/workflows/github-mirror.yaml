@@ -35,6 +35,7 @@ jobs:
             echo "Missing secret: MIRROR_FINE_GRAINED_TOKEN" >&2
             exit 1
           fi
+          echo "The Fine-grained PAT must grant Contents and Workflows read/write access to $MIRROR_REPOSITORY"
           echo "::add-mask::$MIRROR_FINE_GRAINED_TOKEN"
 
       - name: Remove Gitea workflow definitions
