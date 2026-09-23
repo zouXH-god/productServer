@@ -56,7 +56,7 @@ func safePath(root, p string) (string, error) {
 	return x, nil
 }
 func render(s string, p Project, r Release, input, work string) string {
-	repl := map[string]string{"{{project.id}}": itoa(p.ID), "{{project.name}}": p.Name, "{{release.id}}": itoa(r.ID), "{{release.version}}": r.Version, "{{release.ref_type}}": r.RefType, "{{release.commit_sha}}": r.CommitSHA, "{{workspace.input}}": input, "{{workspace.work}}": work}
+	repl := map[string]string{"{{project.id}}": itoa(p.ID), "{{project.name}}": p.Name, "{{release.id}}": itoa(r.ID), "{{release.version}}": r.Version, "{{release.ref_type}}": r.RefType, "{{release.commit_sha}}": r.CommitSHA, "{{release.branch}}": r.Branch, "{{workspace.input}}": input, "{{workspace.work}}": work}
 	for k, v := range repl {
 		s = strings.ReplaceAll(s, k, v)
 	}

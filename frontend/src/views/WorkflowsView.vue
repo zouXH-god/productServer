@@ -29,6 +29,7 @@ import {
   CircleStop,
   FileSearch,
   ServerCog,
+  FolderKanban,
 } from "lucide-vue-next";
 import { api } from "../api";
 import Modal from "../components/Modal.vue";
@@ -50,6 +51,7 @@ const route = useRoute(),
   selected = ref<any>(),
   selectedEdge = ref<any>(),
   createOpen = ref(false),
+  triggerOpen = ref(false),
   runOpen = ref(false),
   releaseID = ref(0),
   previewReleaseID = ref(0),
@@ -60,6 +62,7 @@ const route = useRoute(),
   future = ref<string[]>([]),
   error = ref("");
 const project=ref<any>();
+const triggerDraft=ref({type:"any",glob:"v*"});
 const canDevelop=computed(()=>['owner','admin','developer'].includes(project.value?.role));
 const router = useRouter();
 const { addEdges, fitView } = useVueFlow();
@@ -129,6 +132,9 @@ const modules: any = {
 };
 for(const key of ["archive","extract","sftp_upload","sftp_extract","checksum_verify"])modules[key].category="文件操作";for(const key of ["ssh_command","http_webhook"])modules[key].category="信息交互";
 const moduleGroups=computed(()=>["文件操作","流程控制","判断","数据派生","信息交互"].map(category=>({category,items:Object.entries(modules).filter(([,m]:any)=>m.category===category)})));
+const triggerLabel=computed(()=>({any:"任意版本",tag:"仅 Tag",commit:"所有分支 Commit",tag_glob:`Tag ${triggerGlob.value}`,branch_glob:`分支 ${triggerGlob.value}`} as any)[triggerType.value]||triggerType.value);
+function openTriggerEditor(){triggerDraft.value={type:triggerType.value,glob:triggerGlob.value||(triggerType.value==="branch_glob"?"main":"v*")};triggerOpen.value=true}
+function applyTrigger(){triggerType.value=triggerDraft.value.type;triggerGlob.value=triggerDraft.value.glob.trim();saved.value=false;triggerOpen.value=false}
 function normalizeNodeConfig(type:string, source:any) {
   const c={...(source||{})};
   if(type==="sftp_upload"){if(c.destination===undefined)c.destination=c.remote_dir;if(c.file_pattern===undefined)c.file_pattern=c.local_path;}
@@ -436,6 +442,10 @@ function applyAICanvas(canvas:any){
       <button class="icon-btn" title="返回工作流列表" @click="router.push('/workflows')">
         <ArrowLeft />
       </button>
+      <button v-if="project" class="editor-project" type="button" title="打开项目详情" @click="router.push(`/projects/${pid}`)">
+        <span class="editor-project-icon"><FolderKanban/></span>
+        <span><b>{{project.name}}</b><small>{{project.type==='scheduled'?'定时项目':'产物项目'}} · {{project.role}} · #{{project.id}}</small></span>
+      </button>
       <div class="editor-name">
         <input v-model="name" @input="saved = false" /><span>{{
           saved ? "已保存" : "有未保存更改"
@@ -444,6 +454,7 @@ function applyAICanvas(canvas:any){
       <label class="switch"
         ><input v-model="enabled" type="checkbox" />启用</label
       >
+	  <button v-if="project?.type==='artifact'" class="trigger-editor-button" type="button" title="编辑上传触发条件" @click="openTriggerEditor"><GitBranch/><span><small>触发条件</small><b>{{triggerLabel}}</b></span></button>
 	  <div v-if="project?.type==='artifact'" class="release-preview-control">
         <select v-model.number="previewReleaseID" @change="loadPreview">
           <option :value="0">选择预览版本</option>
@@ -739,14 +750,16 @@ function applyAICanvas(canvas:any){
         <option value="tag">仅 Tag</option>
         <option value="commit">仅 Commit</option>
         <option value="tag_glob">Tag Glob</option>
+        <option value="branch_glob">分支匹配</option>
       </select></label
-    ><label v-if="project?.type==='artifact'&&triggerType === 'tag_glob'"
-      >Tag 匹配规则<input v-model="triggerGlob" placeholder="v*"
+    ><label v-if="project?.type==='artifact'&&['tag_glob','branch_glob'].includes(triggerType)"
+      >{{triggerType==='branch_glob'?'分支匹配规则':'Tag 匹配规则'}}<input v-model="triggerGlob" :placeholder="triggerType==='branch_glob'?'main 或 feature/*':'v*'"
     /></label>
     <div class="panel-actions">
       <button class="btn secondary" @click="router.push('/workflows')">取消</button
       ><button class="btn" @click="startEditor">进入编辑器</button>
     </div></Modal
+  ><Modal v-model="triggerOpen" title="编辑触发条件" description="保存工作流后，新上传的产物会按此条件自动触发。"><label>触发条件<select v-model="triggerDraft.type"><option value="any">任意版本</option><option value="tag">仅 Tag</option><option value="commit">所有分支 Commit</option><option value="tag_glob">Tag 匹配</option><option value="branch_glob">分支匹配</option></select></label><label v-if="['tag_glob','branch_glob'].includes(triggerDraft.type)">{{triggerDraft.type==='branch_glob'?'分支 glob':'Tag glob'}}<input v-model="triggerDraft.glob" :placeholder="triggerDraft.type==='branch_glob'?'main 或 feature/*':'v* 或 release-*'"></label><div v-if="triggerDraft.type==='branch_glob'" class="notice notice-warning">仅匹配带分支标识的 Commit 产物；Tag 产物不会触发。</div><div class="panel-actions"><button class="btn secondary" @click="triggerOpen=false">取消</button><button class="btn" :disabled="['tag_glob','branch_glob'].includes(triggerDraft.type)&&!triggerDraft.glob.trim()" @click="applyTrigger">应用条件</button></div></Modal
   ><Modal
     v-model="runOpen"
     title="手动运行"
@@ -764,3 +777,24 @@ function applyAICanvas(canvas:any){
       </button>
     </div></Modal>
 </template>
+<style scoped>
+.editor-project { max-width: 210px; min-width: 150px; height: 48px; padding: 0 14px 0 8px; border: 0; border-right: 1px solid var(--border); background: transparent; display: flex; align-items: center; gap: 9px; text-align: left; cursor: pointer; }
+.editor-project:hover { background: var(--surface-2); border-radius: 11px; }
+.editor-project-icon { width: 32px; height: 32px; flex: 0 0 auto; border-radius: 10px; background: var(--surface-2); display: grid; place-items: center; }
+.editor-project-icon svg { width: 16px; }
+.editor-project > span:last-child { min-width: 0; display: grid; gap: 3px; }
+.editor-project b, .editor-project small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.editor-project b { font-size: 13px; }
+.editor-project small { font-size: 9px; color: var(--muted); }
+.trigger-editor-button { height: 42px; padding: 0 10px; border: 1px solid var(--border); border-radius: 11px; background: #fff; display: flex; align-items: center; gap: 7px; text-align: left; cursor: pointer; }
+.trigger-editor-button:hover { border-color: #aaa; background: var(--surface-2); }
+.trigger-editor-button > svg { width: 16px; }
+.trigger-editor-button > span { display: grid; gap: 1px; }
+.trigger-editor-button small { font-size: 8px; }
+.trigger-editor-button b { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+@media (max-width: 1100px) {
+  .editor-project { min-width: 42px; width: 42px; padding: 0 5px; border-right: 0; }
+  .editor-project > span:last-child { display: none; }
+  .trigger-editor-button > span { display: none; }
+}
+</style>

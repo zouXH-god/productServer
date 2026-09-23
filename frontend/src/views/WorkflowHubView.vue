@@ -17,7 +17,7 @@ const releases = ref<any[]>([]), releaseID = ref(0), busy = ref(false);
 const detailOpen = ref(false), detailProjectID = ref<number>(), detailRunID = ref<number>();
 const copyTarget = ref<any>(), copyForm = ref({ target_project_id: 0, name: "" });
 const canDevelop = (project: any) => ["owner", "admin", "developer"].includes(project.role);
-function triggerLabel(flow: any) { if (flow.trigger_type === "tag_glob") return `Tag ${flow.trigger_glob || "v*"}`; return ({ any: "任意版本", tag: "仅 Tag", commit: "仅 Commit" } as any)[flow.trigger_type] || flow.trigger_type; }
+function triggerLabel(flow: any) { if (flow.trigger_type === "tag_glob") return `Tag ${flow.trigger_glob || "v*"}`; if(flow.trigger_type==="branch_glob")return `分支 ${flow.trigger_glob||"main"}`; return ({ any: "任意版本", tag: "仅 Tag", commit: "所有分支 Commit" } as any)[flow.trigger_type] || flow.trigger_type; }
 async function load() {
   loading.value = true; error.value = "";
   try {

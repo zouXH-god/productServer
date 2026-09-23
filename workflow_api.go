@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -299,9 +300,20 @@ func (a *App) saveWorkflow(c *gin.Context) {
 		fail(c, 400, "invalid_server_list", err.Error())
 		return
 	}
-	if p.TriggerType != "any" && p.TriggerType != "tag" && p.TriggerType != "commit" && p.TriggerType != "tag_glob" {
+	if p.TriggerType != "any" && p.TriggerType != "tag" && p.TriggerType != "commit" && p.TriggerType != "tag_glob" && p.TriggerType != "branch_glob" {
 		fail(c, 400, "invalid_trigger", "invalid trigger type")
 		return
+	}
+	p.TriggerGlob = strings.TrimSpace(p.TriggerGlob)
+	if p.TriggerType == "tag_glob" || p.TriggerType == "branch_glob" {
+		if p.TriggerGlob == "" {
+			fail(c, 400, "invalid_trigger_glob", "trigger glob is required")
+			return
+		}
+		if _, err := path.Match(p.TriggerGlob, "validation"); err != nil {
+			fail(c, 400, "invalid_trigger_glob", "invalid trigger glob")
+			return
+		}
 	}
 	w := Workflow{ProjectID: pid, Name: p.Name, Enabled: p.Enabled, TriggerType: p.TriggerType, TriggerGlob: p.TriggerGlob}
 	status := 201
@@ -569,7 +581,7 @@ func (a *App) getRun(c *gin.Context) {
 	if version == "" {
 		version = x.DisplayVersion
 	}
-	c.JSON(200, gin.H{"id": x.ID, "project_id": x.ProjectID, "project_name": runProject.Name, "workflow_id": x.WorkflowID, "workflow_name": workflow.Name, "release_id": x.ReleaseID, "version": version, "ref_type": release.RefType, "commit_sha": release.CommitSHA, "trigger_source": x.TriggerSource, "scheduled_for": x.ScheduledFor, "status": x.Status, "error_summary": x.ErrorSummary, "created_at": x.CreatedAt, "started_at": x.StartedAt, "finished_at": x.FinishedAt, "log_bytes": x.LogBytes, "definition": definition, "nodes": nodes})
+	c.JSON(200, gin.H{"id": x.ID, "project_id": x.ProjectID, "project_name": runProject.Name, "workflow_id": x.WorkflowID, "workflow_name": workflow.Name, "release_id": x.ReleaseID, "version": version, "ref_type": release.RefType, "commit_sha": release.CommitSHA, "branch": release.Branch, "trigger_source": x.TriggerSource, "scheduled_for": x.ScheduledFor, "status": x.Status, "error_summary": x.ErrorSummary, "created_at": x.CreatedAt, "started_at": x.StartedAt, "finished_at": x.FinishedAt, "log_bytes": x.LogBytes, "definition": definition, "nodes": nodes})
 }
 func (a *App) getRunLogs(c *gin.Context) {
 	pid, ok := parseID(c, "id")

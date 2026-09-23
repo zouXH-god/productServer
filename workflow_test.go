@@ -72,6 +72,13 @@ func TestTriggers(t *testing.T) {
 	if triggerMatches(Workflow{TriggerType: "commit"}, r) {
 		t.Fatal("tag matched commit")
 	}
+	branchRelease := Release{Version: "abc123", RefType: "commit", Branch: "feature/deploy"}
+	if !triggerMatches(Workflow{TriggerType: "branch_glob", TriggerGlob: "feature/*"}, branchRelease) {
+		t.Fatal("branch glob did not match commit branch")
+	}
+	if triggerMatches(Workflow{TriggerType: "branch_glob", TriggerGlob: "feature/*"}, r) {
+		t.Fatal("branch glob matched tag")
+	}
 }
 func TestArchiveAndSafeExtract(t *testing.T) {
 	root := t.TempDir()
@@ -190,8 +197,8 @@ func TestReleaseWorkspaceSeparatesArchivesAndExtractedFiles(t *testing.T) {
 func TestRuntimeTemplatesAndConditionalEdges(t *testing.T) {
 	matched := true
 	values := runtimeValues{Env: environmentSnapshot{Global: map[string]string{"REGION": "global"}, Project: map[string]string{"REGION": "project"}}, Steps: map[string]map[string]any{"split": {"count": 2}}}
-	rendered, err := renderRuntimeString("{{env.REGION}}/{{env.global.REGION}}/{{steps.split.outputs.count}}/{{loop.index}}", values, Project{}, Release{}, "", "")
-	if err != nil || rendered != "project/global/2/0" {
+	rendered, err := renderRuntimeString("{{env.REGION}}/{{env.global.REGION}}/{{steps.split.outputs.count}}/{{loop.index}}/{{release.branch}}", values, Project{}, Release{Branch: "feature/deploy"}, "", "")
+	if err != nil || rendered != "project/global/2/0/feature/deploy" {
 		t.Fatalf("rendered=%q err=%v", rendered, err)
 	}
 	if !edgeActive(WorkflowEdge{Condition: "true"}, nodeResult{OK: true, Matched: &matched}) {

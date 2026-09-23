@@ -14,6 +14,7 @@ import {
   Play,
   Pencil,
   History,
+  GitBranch,
 } from "lucide-vue-next";
 import { api, authDownload } from "../api";
 import Modal from "../components/Modal.vue";
@@ -45,6 +46,7 @@ async function load() {
   project.value=await api<any>(`/api/projects/${id}`);[workflows.value,runs.value,members.value,targetProjects.value]=await Promise.all([api<any[]>(`/api/projects/${id}/workflows`),api<any[]>(`/api/projects/${id}/runs`),api<any[]>(`/api/projects/${id}/members`),api<any[]>(`/api/projects`)]);if(project.value.type==='artifact'){releases.value=await api<any[]>(`/api/projects/${id}/releases`);token.value=await api<any>(`/api/projects/${id}/token`).catch(()=>null)}else{releases.value=[];token.value=null}
 }
 const canAdmin=computed(()=>['owner','admin'].includes(project.value?.role)),canDevelop=computed(()=>['owner','admin','developer'].includes(project.value?.role));
+function workflowTriggerLabel(flow:any){if(flow.trigger_type==='tag_glob')return `Tag ${flow.trigger_glob||'v*'}`;if(flow.trigger_type==='branch_glob')return `分支 ${flow.trigger_glob||'main'}`;return ({any:'任意版本',tag:'仅 Tag',commit:'所有分支 Commit'} as any)[flow.trigger_type]||flow.trigger_type}
 async function addMember(){await api(`/api/projects/${id}/members`,{method:'POST',body:JSON.stringify(memberForm.value)});memberOpen.value=false;memberForm.value={username:'',role:'viewer'};await load()}
 async function setRole(member:any,role:string){await api(`/api/projects/${id}/members/${member.user_id}`,{method:'PUT',body:JSON.stringify({role})});await load()}
 async function removeMember(member:any){await api(`/api/projects/${id}/members/${member.user_id}`,{method:'DELETE'});await load()}
@@ -130,7 +132,7 @@ onMounted(load);
       <div class="workflow-cards">
         <article v-for="flow in workflows" :key="flow.id" class="card workflow-card project-workflow-card">
           <div class="card-icon"><Workflow/></div>
-          <div class="grow"><h3>{{flow.name}}</h3><p>{{flow.enabled?'已启用':'已停用'}} · {{flow.trigger_type==='tag_glob'?`Tag ${flow.trigger_glob}`:flow.trigger_type}}</p><small>更新于 {{new Date(flow.updated_at).toLocaleString()}}</small></div>
+          <div class="grow"><h3>{{flow.name}}</h3><p>{{flow.enabled?'已启用':'已停用'}} · {{workflowTriggerLabel(flow)}}</p><small>更新于 {{new Date(flow.updated_at).toLocaleString()}}</small></div>
           <div class="workflow-actions"><button v-if="canDevelop" class="btn secondary small-btn" @click="prepareRun(flow)"><Play/>运行</button><button class="btn secondary small-btn" @click="editWorkflow(flow)"><Pencil/>编辑</button><button v-if="canDevelop" class="btn secondary small-btn" @click="prepareCopyWorkflow(flow)"><Copy/>复制</button><button class="btn secondary small-btn" @click="openHistory(flow)"><History/>历史</button><button v-if="canDevelop" class="icon-btn danger-text" title="删除工作流" @click="deleteWorkflowTarget=flow"><Trash2/></button></div>
         </article>
         <EmptyState v-if="!workflows.length" title="暂无工作流" text="创建工作流后可自动处理发布产物。"><router-link v-if="canDevelop" class="btn" :to="`/workflows/editor/${id}?new=1`"><Plus/>创建工作流</router-link></EmptyState>
@@ -186,10 +188,7 @@ onMounted(load);
           <div class="card-icon"><Package /></div>
           <div class="grow">
             <h3>{{ r.version }}</h3>
-            <p>
-              {{ r.ref_type || "未知来源" }} ·
-              {{ r.commit_sha?.slice(0, 10) || "无提交信息" }}
-            </p>
+            <p class="release-reference"><span v-if="r.branch" class="branch-badge"><GitBranch/>{{r.branch}}</span><span>{{ r.ref_type || "未知来源" }} · {{ r.commit_sha?.slice(0, 10) || "无提交信息" }}</span></p>
           </div>
           <time>{{ new Date(r.created_at).toLocaleString() }}</time></button
         ><EmptyState
@@ -262,4 +261,7 @@ onMounted(load);
 <style scoped>
 .project-workflow-card { align-items: flex-start; flex-wrap: wrap; }
 .project-workflow-card .workflow-actions { width: 100%; padding-top: 12px; border-top: 1px solid var(--border); justify-content: flex-start; }
+.release-reference { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.branch-badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; border-radius: 999px; background: var(--surface-2); color: var(--text); font-size: 11px; }
+.branch-badge svg { width: 13px; height: 13px; }
 </style>

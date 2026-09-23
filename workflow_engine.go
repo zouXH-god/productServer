@@ -57,6 +57,9 @@ func triggerMatches(w Workflow, r Release) bool {
 	case "tag_glob":
 		ok, _ := path.Match(w.TriggerGlob, r.Version)
 		return r.RefType == "tag" && ok
+	case "branch_glob":
+		ok, _ := path.Match(w.TriggerGlob, r.Branch)
+		return r.RefType == "commit" && r.Branch != "" && ok
 	}
 	return false
 }

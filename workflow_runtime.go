@@ -52,6 +52,8 @@ func lookupRuntime(key string, v runtimeValues, p Project, r Release, input, wor
 		return r.RefType, true
 	case "release.commit_sha":
 		return r.CommitSHA, true
+	case "release.branch":
+		return r.Branch, true
 	case "workspace.input":
 		return input, true
 	case "workspace.work":
