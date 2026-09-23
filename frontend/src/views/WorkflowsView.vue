@@ -38,6 +38,7 @@ import Drawer from "../components/Drawer.vue";
 import EmptyState from "../components/EmptyState.vue";
 import FileTree from "../components/FileTree.vue";
 import AIChatPanel from "../components/AIChatPanel.vue";
+import RunDetailDrawer from "../components/RunDetailDrawer.vue";
 const route = useRoute(),
   pid = Number(route.params.id),
   releases = ref<any[]>([]),
@@ -57,6 +58,8 @@ const route = useRoute(),
   historyOpen = ref(false),
   leaveOpen = ref(false),
   runOpen = ref(false),
+  runDetailOpen = ref(false),
+  runDetailID = ref<number>(),
   releaseID = ref(0),
   previewReleaseID = ref(0),
   previewFiles = ref<any[]>([]),
@@ -139,7 +142,7 @@ const modules: any = {
 };
 for(const key of ["archive","extract","sftp_upload","sftp_extract","checksum_verify"])modules[key].category="文件操作";for(const key of ["ssh_command","http_webhook"])modules[key].category="信息交互";
 const moduleGroups=computed(()=>["文件操作","流程控制","判断","数据派生","信息交互"].map(category=>({category,items:Object.entries(modules).filter(([,m]:any)=>m.category===category)})));
-const persistedSignature=computed(()=>JSON.stringify({name:name.value,enabled:enabled.value,trigger_type:triggerType.value,trigger_glob:triggerGlob.value,nodes:nodes.value.map((n:any)=>({id:n.id,type:n.data.module,config:n.data.config,timeout_seconds:n.data.timeout_seconds,retries:n.data.retries,position:n.position})),edges:edges.value.map((e:any)=>({from:e.source,to:e.target,condition:e.condition||"success"}))}));
+const persistedSignature=computed(()=>JSON.stringify({name:name.value,enabled:enabled.value,trigger_type:triggerType.value,trigger_glob:triggerGlob.value,nodes:nodes.value.map((n:any)=>({id:n.id,name:n.data.name||"",type:n.data.module,config:n.data.config,timeout_seconds:n.data.timeout_seconds,retries:n.data.retries,position:n.position})),edges:edges.value.map((e:any)=>({from:e.source,to:e.target,condition:e.condition||"success"}))}));
 const triggerLabel=computed(()=>({any:"任意版本",tag:"仅 Tag",commit:"所有分支 Commit",tag_glob:`Tag ${triggerGlob.value}`,branch_glob:`分支 ${triggerGlob.value}`} as any)[triggerType.value]||triggerType.value);
 function openTriggerEditor(){triggerDraft.value={type:triggerType.value,glob:triggerGlob.value||(triggerType.value==="branch_glob"?"main":"v*")};triggerOpen.value=true}
 function applyTrigger(){triggerType.value=triggerDraft.value.type;triggerGlob.value=triggerDraft.value.glob.trim();saved.value=false;triggerOpen.value=false}
@@ -213,6 +216,7 @@ function add(type: string) {
       y: 100 + Math.floor(nodes.value.length / 3) * 140,
     },
     data: {
+      name: "",
       module: type,
       config: structuredClone(m.defaults),
       timeout_seconds: 600,
@@ -222,7 +226,7 @@ function add(type: string) {
   if(type==="foreach"||type==="server_list"){
     const endType=type==="foreach"?"loop_end":"server_list_end";
     const endID=`${endType}_${Date.now()+1}`;nodes.value[nodes.value.length-1].data.config.end_node_id=endID;
-    nodes.value.push({id:endID,label:modules[endType].name,position:{x:330+(nodes.value.length%3)*30,y:180+nodes.value.length*20},data:{module:endType,config:{start_node_id:id},timeout_seconds:600,retries:0}});
+    nodes.value.push({id:endID,label:modules[endType].name,position:{x:330+(nodes.value.length%3)*30,y:180+nodes.value.length*20},data:{name:"",module:endType,config:{start_node_id:id},timeout_seconds:600,retries:0}});
     edges.value.push({id:`e_${Date.now()}`,source:id,target:endID,condition:"success"});
   }
 }
@@ -316,7 +320,7 @@ function startEditor() {
   savedSignature.value="";
 }
 function applyDefinition(definition:any,prefix="e"){
-  nodes.value=(definition.nodes||[]).map((n:any)=>({id:n.id,label:modules[n.type]?.name||n.type,position:n.position||{x:100,y:100},data:{module:n.type,config:normalizeNodeConfig(n.type,n.config),timeout_seconds:n.timeout_seconds||600,retries:n.retries||0}}));
+  nodes.value=(definition.nodes||[]).map((n:any)=>({id:n.id,label:n.name||modules[n.type]?.name||n.type,position:n.position||{x:100,y:100},data:{name:n.name||"",module:n.type,config:normalizeNodeConfig(n.type,n.config),timeout_seconds:n.timeout_seconds||600,retries:n.retries||0}}));
   edges.value=(definition.edges||[]).map((e:any,i:number)=>({id:`${prefix}${i}_${Date.now()}`,source:e.from,target:e.to,condition:e.condition||"success",label:e.condition&&e.condition!=="success"?e.condition:""}));
 }
 async function edit(id: number) {
@@ -335,7 +339,7 @@ async function edit(id: number) {
 async function openWorkflowHistory(){if(!editing.value)return;workflowHistory.value=await api(`/api/projects/${pid}/workflows/${editing.value}/history`);historyPreview.value=undefined;historyOpen.value=true;if(workflowHistory.value.length)await viewWorkflowRevision(workflowHistory.value[0])}
 async function viewWorkflowRevision(item:any){historyPreview.value=await api(`/api/projects/${pid}/workflows/${editing.value}/history/${item.id}`)}
 function applyWorkflowRevision(){if(!historyPreview.value)return;checkpoint();name.value=historyPreview.value.name;enabled.value=historyPreview.value.enabled;triggerType.value=historyPreview.value.trigger_type;triggerGlob.value=historyPreview.value.trigger_glob;applyDefinition(historyPreview.value.definition,"revision");baseRevisionID.value=historyPreview.value.id;saved.value=false;historyOpen.value=false;nextTick(()=>fitView({padding:.2}))}
-const historyPreviewNodes=computed(()=>(historyPreview.value?.definition?.nodes||[]).map((n:any)=>({id:n.id,position:n.position||{x:100,y:100},data:{label:modules[n.type]?.name||n.type},sourcePosition:Position.Right,targetPosition:Position.Left})));
+const historyPreviewNodes=computed(()=>(historyPreview.value?.definition?.nodes||[]).map((n:any)=>({id:n.id,position:n.position||{x:100,y:100},data:{label:n.name||modules[n.type]?.name||n.type},sourcePosition:Position.Right,targetPosition:Position.Left})));
 const historyPreviewEdges=computed(()=>(historyPreview.value?.definition?.edges||[]).map((e:any,i:number)=>({id:`history-${i}`,source:e.from,target:e.to,label:e.condition&&e.condition!=="success"?e.condition:""})));
 async function save() {
   error.value = "";
@@ -346,6 +350,7 @@ async function save() {
   const definition = {
     nodes: nodes.value.map((n) => ({
       id: n.id,
+      name: n.data.name || "",
       type: n.data.module,
       config: n.data.config,
       timeout_seconds: n.data.timeout_seconds,
@@ -387,7 +392,8 @@ async function run() {
     body: JSON.stringify({ release_id: releaseID.value }),
   });
   runOpen.value = false;
-  await router.push({path:"/runs",query:{project:String(pid),run:String(created.id)}});
+  runDetailID.value = created.id;
+  runDetailOpen.value = true;
 }
 watch(persistedSignature,signature=>{if(savedSignature.value)saved.value=signature===savedSignature.value;else if(editing.value!==undefined)saved.value=false});
 function inputFocus() {
@@ -456,7 +462,7 @@ function serverScopeFor(nodeID:string){
 }
 const selectedServerScope = computed(()=>selected.value?serverScopeFor(selected.value.id):undefined);
 const canvasDefinition = computed(() => ({
-  nodes: nodes.value.map((n) => ({ id:n.id, type:n.data.module, config:n.data.config, timeout_seconds:n.data.timeout_seconds, retries:n.data.retries, position:n.position })),
+  nodes: nodes.value.map((n) => ({ id:n.id, name:n.data.name||"", type:n.data.module, config:n.data.config, timeout_seconds:n.data.timeout_seconds, retries:n.data.retries, position:n.position })),
   edges: edges.value.map((e) => ({ from:e.source, to:e.target, condition:e.condition||"success" })),
 }));
 function applyAICanvas(canvas:any){
@@ -563,8 +569,8 @@ function applyAICanvas(canvas:any){
               />
               <component :is="modules[p.data.module]?.icon" />
               <div>
-                <b>{{ modules[p.data.module]?.name }}</b
-                ><small v-if="p.data.module==='server_list'">{{p.data.config.connection_ids?.length||0}} 台 · {{p.data.config.mode==='sequential'?'串行':`并行 ${p.data.config.concurrency||4}`}}</small><small v-else>{{ p.id }}</small>
+                <b>{{ p.data.name || modules[p.data.module]?.name }}</b
+                ><small v-if="p.data.module==='server_list'">{{p.data.name ? `${modules[p.data.module]?.name} · ` : ''}}{{p.data.config.connection_ids?.length||0}} 台 · {{p.data.config.mode==='sequential'?'串行':`并行 ${p.data.config.concurrency||4}`}}</small><small v-else>{{ p.data.name ? `${modules[p.data.module]?.name} · ${p.id}` : p.id }}</small>
               </div>
               <template v-if="['remote_file_exists','value_match'].includes(p.data.module)">
                 <Handle id="true" type="source" :position="Position.Right" style="top:35%" title="条件为真"/><Handle id="false" type="source" :position="Position.Right" style="top:68%" title="条件为假"/>
@@ -590,9 +596,10 @@ function applyAICanvas(canvas:any){
   </Drawer>
   <Drawer
     v-model="nodeEditorOpen"
-    :title="moduleInfo?.name || '节点配置'"
-    ><template v-if="selected"
-      ><p class="muted">{{ moduleInfo?.desc }}</p>
+  :title="selected?.data.name || moduleInfo?.name || '节点配置'"
+  ><template v-if="selected"
+    ><p class="muted">{{ moduleInfo?.desc }}</p>
+      <label>节点名称<input v-model.trim="selected.data.name" maxlength="80" :placeholder="moduleInfo?.name || '输入便于识别的名称'" /></label>
       <label>节点 ID<input v-model="selected.id" /></label>
       <div v-if="supportsPattern" class="pattern-picker">
         <label>
@@ -808,6 +815,7 @@ function applyAICanvas(canvas:any){
         <Play />开始运行
       </button>
     </div></Modal>
+  <RunDetailDrawer v-model="runDetailOpen" :project-id="pid" :run-id="runDetailID" />
 </template>
 <style scoped>
 .editor-project { max-width: 210px; min-width: 150px; height: 48px; padding: 0 14px 0 8px; border: 0; border-right: 1px solid var(--border); background: transparent; display: flex; align-items: center; gap: 9px; text-align: left; cursor: pointer; }

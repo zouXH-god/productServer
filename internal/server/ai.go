@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"bytes"
@@ -455,7 +455,7 @@ func (a *App) callAI(ctx context.Context, p AIProvider, messages []map[string]an
 
 func aiTools() []map[string]any {
 	names := []string{"get_canvas", "get_module_catalog", "validate_canvas", "list_ssh_connections", "list_releases", "list_release_files", "list_environment_variables", "add_node", "update_node", "delete_node", "add_edge", "update_edge", "delete_edge", "auto_layout"}
-	descriptions := map[string]string{"add_node": "Add node: node={id,type,config,timeout_seconds,retries,position:{x,y}}.", "update_node": "Replace node: id,node.", "delete_node": "Delete node and connected edges: id.", "add_edge": "Add edge: edge={from,to,condition}.", "update_edge": "Update edge: from,to,condition.", "delete_edge": "Delete edge: from,to.", "list_release_files": "List files: release_id.", "auto_layout": "Apply deterministic DAG layout."}
+	descriptions := map[string]string{"add_node": "Add node: node={id,name,type,config,timeout_seconds,retries,position:{x,y}}. name is an optional human-readable label.", "update_node": "Replace node: id,node. Preserve or set the optional human-readable node name.", "delete_node": "Delete node and connected edges: id.", "add_edge": "Add edge: edge={from,to,condition}.", "update_edge": "Update edge: from,to,condition.", "delete_edge": "Delete edge: from,to.", "list_release_files": "List files: release_id.", "auto_layout": "Apply deterministic DAG layout."}
 	out := make([]map[string]any, 0, len(names))
 	for _, n := range names {
 		desc := descriptions[n]

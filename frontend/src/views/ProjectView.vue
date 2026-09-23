@@ -27,6 +27,7 @@ import FileTree from "../components/FileTree.vue";
 import EnvironmentVariables from "../components/EnvironmentVariables.vue";
 import RunDetailDrawer from "../components/RunDetailDrawer.vue";
 import StatusBadge from "../components/StatusBadge.vue";
+import { toast } from "../toast";
 const route = useRoute(),
   router = useRouter(),
   id = Number(route.params.id),
@@ -59,10 +60,12 @@ async function addMember(){await api(`/api/projects/${id}/members`,{method:'POST
 async function setRole(member:any,role:string){await api(`/api/projects/${id}/members/${member.user_id}`,{method:'PUT',body:JSON.stringify({role})});await load()}
 async function removeMember(member:any){await api(`/api/projects/${id}/members/${member.user_id}`,{method:'DELETE'});await load()}
 async function detail(r: any) {
-  [selected.value, accessRecords.value] = await Promise.all([
+  const [release, accesses] = await Promise.all([
     api(`/api/projects/${id}/releases/${r.id}`),
     api<any[]>(`/api/projects/${id}/releases/${r.id}/accesses`),
   ]);
+  selected.value = release;
+  accessRecords.value = Array.isArray(accesses) ? accesses : [];
 }
 function downloadArtifact(file: any) {
   authDownload(
@@ -93,6 +96,7 @@ async function deleteWorkflow(){if(!deleteWorkflowTarget.value)return;await api(
 async function copy(text: string, key = "x") {
   await navigator.clipboard.writeText(text);
   copied.value = key;
+  toast(key === "token" ? "Token 复制成功" : "复制成功");
   setTimeout(() => (copied.value = ""), 1400);
 }
 const actionExample = computed(

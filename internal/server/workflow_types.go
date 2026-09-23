@@ -1,4 +1,4 @@
-package main
+package server
 
 type WorkflowDefinition struct {
 	Nodes []WorkflowNode `json:"nodes"`
@@ -6,6 +6,7 @@ type WorkflowDefinition struct {
 }
 type WorkflowNode struct {
 	ID             string             `json:"id"`
+	Name           string             `json:"name,omitempty"`
 	Type           string             `json:"type"`
 	Config         map[string]any     `json:"config"`
 	TimeoutSeconds int                `json:"timeout_seconds"`
@@ -27,7 +28,7 @@ func validateDefinition(d WorkflowDefinition) bool {
 	next := map[string][]string{}
 	allowed := map[string]bool{"archive": true, "extract": true, "sftp_upload": true, "sftp_extract": true, "ssh_command": true, "http_webhook": true, "checksum_verify": true, "remote_file_exists": true, "value_match": true, "string_split": true, "foreach": true, "loop_end": true, "server_list": true, "server_list_end": true}
 	for _, n := range d.Nodes {
-		if n.ID == "" || ids[n.ID] || !allowed[n.Type] {
+		if n.ID == "" || ids[n.ID] || !allowed[n.Type] || len([]rune(n.Name)) > 80 {
 			return false
 		}
 		ids[n.ID] = true

@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"archive/zip"
@@ -511,6 +511,10 @@ func TestTokenUploadDuplicateAndDownload(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	w = request(t, a, "GET", "/api/projects/1/releases/"+itoa(rel.ID)+"/accesses", nil, map[string]string{"Authorization": "Bearer " + jwt})
+	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != "[]" {
+		t.Fatalf("empty access history must be an array: %d %s", w.Code, w.Body.String())
+	}
 	b, ct = uploadBody(t, "v1", map[string]string{"again": "x"})
 	w = request(t, a, "POST", "/api/upload", b, map[string]string{"Content-Type": ct, "Authorization": "Bearer " + token})
 	if w.Code != 409 {
@@ -645,6 +649,10 @@ func TestProjectArtifactCapacityRemovesOldestRelease(t *testing.T) {
 	w = request(t, a, "GET", "/api/projects/"+itoa(pid), nil, map[string]string{"Authorization": "Bearer " + jwt})
 	if w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"artifact_bytes":6`)) {
 		t.Fatalf("project usage=%d %s", w.Code, w.Body.String())
+	}
+	w = request(t, a, "GET", "/api/projects", nil, map[string]string{"Authorization": "Bearer " + jwt})
+	if w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"latest_version":"new"`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"artifact_bytes":6`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"release_count":1`)) {
+		t.Fatalf("project summary=%d %s", w.Code, w.Body.String())
 	}
 }
 func TestTokenDownloadValidationAndEncoding(t *testing.T) {

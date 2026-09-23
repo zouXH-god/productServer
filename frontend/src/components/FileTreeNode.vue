@@ -7,7 +7,10 @@ import {
   Folder,
   FolderOpen,
   Download,
+  Copy,
+  Check,
 } from "lucide-vue-next";
+import { toast } from "../toast";
 
 export type FileTreeItem = {
   name: string;
@@ -27,6 +30,30 @@ const props = withDefaults(
 );
 const emit = defineEmits<{ select: [file: any] }>();
 const open = ref(props.depth < 2);
+const copied = ref(false);
+function artifactPath() {
+  return String(props.node.file?.name || props.node.path)
+    .replaceAll("\\", "/")
+    .replace(/^\/+/, "");
+}
+async function copyPath() {
+  const path = artifactPath();
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(path);
+  } else {
+    const input = document.createElement("textarea");
+    input.value = path;
+    input.style.position = "fixed";
+    input.style.opacity = "0";
+    document.body.appendChild(input);
+    input.select();
+    document.execCommand("copy");
+    input.remove();
+  }
+  copied.value = true;
+  toast(`已复制路径：${path}`);
+  window.setTimeout(() => (copied.value = false), 1400);
+}
 function formatFileSize(value: unknown) {
   const bytes = Number(value);
   if (!Number.isFinite(bytes) || bytes < 0) return "—";
@@ -84,6 +111,16 @@ function formatFileSize(value: unknown) {
         @click.stop="emit('select', node.file)"
       >
         <Download />
+      </button>
+      <button
+        type="button"
+        class="icon-btn copy-path-button"
+        :title="copied ? '已复制产物路径' : `复制产物路径：${artifactPath()}`"
+        :aria-label="copied ? '已复制产物路径' : `复制产物路径 ${artifactPath()}`"
+        @click.stop="copyPath"
+      >
+        <Check v-if="copied" />
+        <Copy v-else />
       </button>
     </div>
     <div v-if="node.directory && open" class="file-tree-children">

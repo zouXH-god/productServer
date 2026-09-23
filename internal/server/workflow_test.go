@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -11,10 +11,15 @@ import (
 )
 
 func TestWorkflowDAGValidation(t *testing.T) {
-	valid := WorkflowDefinition{Nodes: []WorkflowNode{{ID: "a", Type: "archive"}, {ID: "b", Type: "checksum_verify"}}, Edges: []WorkflowEdge{{From: "a", To: "b"}}}
+	valid := WorkflowDefinition{Nodes: []WorkflowNode{{ID: "a", Name: "打包前端", Type: "archive"}, {ID: "b", Name: "验证摘要", Type: "checksum_verify"}}, Edges: []WorkflowEdge{{From: "a", To: "b"}}}
 	if !validateDefinition(valid) {
 		t.Fatal("valid DAG rejected")
 	}
+	valid.Nodes[0].Name = strings.Repeat("名", 81)
+	if validateDefinition(valid) {
+		t.Fatal("node name longer than 80 characters accepted")
+	}
+	valid.Nodes[0].Name = "打包前端"
 	valid.Edges = append(valid.Edges, WorkflowEdge{From: "b", To: "a"})
 	if validateDefinition(valid) {
 		t.Fatal("cycle accepted")

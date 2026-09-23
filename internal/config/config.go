@@ -1,11 +1,20 @@
-package main
+package config
 
 import (
 	"fmt"
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/joho/godotenv"
 )
+
+func LoadDotEnv(path string) error {
+	if err := godotenv.Load(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
 
 type Config struct {
 	HTTPAddr, DBDriver, DBDSN, StorageDir, JWTSecret                       string
@@ -26,7 +35,6 @@ func env(key, fallback string) string {
 	}
 	return fallback
 }
-func itoa[T ~uint](v T) string { return strconv.FormatUint(uint64(v), 10) }
 func envInt64(key string, fallback int64) (int64, error) {
 	v := os.Getenv(key)
 	if v == "" {
@@ -38,7 +46,7 @@ func envInt64(key string, fallback int64) (int64, error) {
 	}
 	return n, nil
 }
-func loadConfig() (Config, error) {
+func Load() (Config, error) {
 	maxFile, err := envInt64("MAX_FILE_BYTES", 1<<30)
 	if err != nil {
 		return Config{}, err

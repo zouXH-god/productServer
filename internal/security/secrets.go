@@ -1,4 +1,4 @@
-package main
+package security
 
 import (
 	"crypto/aes"
@@ -10,7 +10,7 @@ import (
 	"io"
 )
 
-func secretKey(raw string) ([]byte, error) {
+func SecretKey(raw string) ([]byte, error) {
 	if raw == "" {
 		return nil, fmt.Errorf("SECRET_ENCRYPTION_KEY is required")
 	}
@@ -25,11 +25,11 @@ func secretKey(raw string) ([]byte, error) {
 	}
 	return nil, fmt.Errorf("SECRET_ENCRYPTION_KEY must contain 32 bytes")
 }
-func encryptSecret(master, value string) (string, error) {
+func EncryptSecret(master, value string) (string, error) {
 	if value == "" {
 		return "", nil
 	}
-	k, e := secretKey(master)
+	k, e := SecretKey(master)
 	if e != nil {
 		return "", e
 	}
@@ -47,11 +47,11 @@ func encryptSecret(master, value string) (string, error) {
 	}
 	return base64.StdEncoding.EncodeToString(g.Seal(nonce, nonce, []byte(value), nil)), nil
 }
-func decryptSecret(master, value string) (string, error) {
+func DecryptSecret(master, value string) (string, error) {
 	if value == "" {
 		return "", nil
 	}
-	k, e := secretKey(master)
+	k, e := SecretKey(master)
 	if e != nil {
 		return "", e
 	}

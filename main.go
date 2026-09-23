@@ -4,46 +4,38 @@ import (
 	"log"
 	"os"
 
-	"github.com/joho/godotenv"
+	"productserver/internal/server"
 )
 
 func main() {
-	if err := loadDotEnv(".env"); err != nil {
+	if err := server.LoadDotEnv(".env"); err != nil {
 		log.Fatalf("load .env: %v", err)
 	}
-	cfg, err := loadConfig()
+	cfg, err := server.LoadConfig()
 	if err != nil {
 		log.Fatal(err)
 	}
-	db, err := openDatabase(cfg)
+	db, err := server.OpenDatabase(cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := migrateAndBootstrap(db, cfg); err != nil {
+	if err := server.MigrateAndBootstrap(db, cfg); err != nil {
 		log.Fatal(err)
 	}
 	if len(os.Args) > 1 && os.Args[1] == "worker" {
 		log.Printf("workflow worker started")
-		if err := runWorker(db, cfg); err != nil {
+		if err := server.RunWorker(db, cfg); err != nil {
 			log.Fatal(err)
 		}
 		return
 	}
-	app, err := newApp(db, cfg)
+	app, err := server.NewApp(db, cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
-	go app.dispatchReleaseEvents()
-	go app.dispatchSchedules()
+	app.StartBackgroundServices()
 	log.Printf("product server listening on %s", cfg.HTTPAddr)
-	if err := app.router.Run(cfg.HTTPAddr); err != nil {
+	if err := app.Run(cfg.HTTPAddr); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func loadDotEnv(path string) error {
-	if err := godotenv.Load(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
 }

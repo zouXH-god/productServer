@@ -2,6 +2,24 @@
 
 一个用于保存 Git CI 发布产物的最小应用。后端使用 Gin + GORM，前端使用 Vue 3；支持 SQLite、MySQL 和 PostgreSQL，生产构建为内嵌前端资源的单一二进制文件。
 
+## 项目结构
+
+```text
+.
+├── main.go                    # 进程入口与 server/worker 模式选择
+├── internal/
+│   ├── config/                # 环境变量、.env 与配置校验
+│   ├── domain/                # GORM 领域模型
+│   ├── security/              # Secret 加密与解密
+│   └── server/                # HTTP API、AI、工作流、调度器和存储编排
+│       └── frontend/dist/     # 前端嵌入产物
+├── frontend/                  # Vue 3 管理界面源码
+├── uploader/                  # 独立 Git 仓库，不纳入主仓库提交
+└── .gitea/.github             # Gitea 与 GitHub CI
+```
+
+业务实现位于 `internal`，不会作为公共 Go SDK 被外部项目误用；根目录只保留可执行程序入口和工程配置。
+
 ## 开发
 
 需要 Go 1.22+、Node.js 20+。默认使用当前目录的 SQLite 数据库，初始账号为 `admin` / `admin123456`，仅供本地开发使用。

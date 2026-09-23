@@ -9,6 +9,6 @@ frontend/.npm-cache/
 uploader/node_modules/
 uploader/.npm-cache/
 uploader/
-frontend/dist/*
-!frontend/dist/index.html
+internal/server/frontend/dist/*
+!internal/server/frontend/dist/index.html
 .env

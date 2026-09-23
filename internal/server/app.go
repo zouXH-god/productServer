@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -283,9 +283,52 @@ func (a *App) listProjects(c *gin.Context) {
 	if len(ids) > 0 {
 		a.db.Where("id IN ?", ids).Order("id desc").Find(&projects)
 	}
+	type aggregateRow struct {
+		ProjectID uint
+		Count     int64
+		Bytes     int64
+		LatestID  uint
+	}
+	workflowCounts := map[uint]int64{}
+	releaseCounts := map[uint]int64{}
+	artifactBytes := map[uint]int64{}
+	latestReleases := map[uint]Release{}
+	if len(ids) > 0 {
+		var workflowRows, releaseRows, byteRows []aggregateRow
+		a.db.Model(&Workflow{}).Select("project_id, COUNT(*) AS count").Where("project_id IN ?", ids).Group("project_id").Scan(&workflowRows)
+		a.db.Model(&Release{}).Select("project_id, COUNT(*) AS count, MAX(id) AS latest_id").Where("project_id IN ?", ids).Group("project_id").Scan(&releaseRows)
+		a.db.Model(&ArtifactFile{}).Select("releases.project_id, COALESCE(SUM(artifact_files.size), 0) AS bytes").Joins("JOIN releases ON releases.id = artifact_files.release_id").Where("releases.project_id IN ?", ids).Group("releases.project_id").Scan(&byteRows)
+		latestIDs := make([]uint, 0, len(releaseRows))
+		for _, row := range workflowRows {
+			workflowCounts[row.ProjectID] = row.Count
+		}
+		for _, row := range releaseRows {
+			releaseCounts[row.ProjectID] = row.Count
+			latestIDs = append(latestIDs, row.LatestID)
+		}
+		for _, row := range byteRows {
+			artifactBytes[row.ProjectID] = row.Bytes
+		}
+		if len(latestIDs) > 0 {
+			var latest []Release
+			a.db.Where("id IN ?", latestIDs).Find(&latest)
+			for _, release := range latest {
+				latestReleases[release.ProjectID] = release
+			}
+		}
+	}
 	items := make([]gin.H, 0, len(projects))
 	for _, p := range projects {
-		items = append(items, gin.H{"id": p.ID, "name": p.Name, "type": p.Type, "max_artifact_bytes": p.MaxArtifactBytes, "created_at": p.CreatedAt, "role": roles[p.ID]})
+		item := gin.H{"id": p.ID, "name": p.Name, "type": p.Type, "max_artifact_bytes": p.MaxArtifactBytes, "artifact_bytes": int64(0), "release_count": int64(0), "workflow_count": workflowCounts[p.ID], "latest_version": "", "latest_release_at": nil, "created_at": p.CreatedAt, "role": roles[p.ID]}
+		if p.Type == "artifact" {
+			item["release_count"] = releaseCounts[p.ID]
+			item["artifact_bytes"] = artifactBytes[p.ID]
+			if latest, exists := latestReleases[p.ID]; exists {
+				item["latest_version"] = latest.Version
+				item["latest_release_at"] = latest.CreatedAt
+			}
+		}
+		items = append(items, item)
 	}
 	c.JSON(200, items)
 }
@@ -628,7 +671,7 @@ func (a *App) listArtifactAccesses(c *gin.Context) {
 		fail(c, 404, "not_found", "release not found")
 		return
 	}
-	var items []artifactAccessResponse
+	items := make([]artifactAccessResponse, 0)
 	a.db.Table("artifact_access_logs").
 		Select("artifact_access_logs.id, artifact_access_logs.ip_address, artifact_access_logs.access_method, artifact_access_logs.http_method, artifact_access_logs.artifact_file_id AS file_id, artifact_files.original_name AS file_name, artifact_access_logs.created_at").
 		Joins("JOIN artifact_files ON artifact_files.id = artifact_access_logs.artifact_file_id").

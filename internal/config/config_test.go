@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"os"
@@ -24,10 +24,10 @@ func TestLoadDotEnv(t *testing.T) {
 		}
 	})
 
-	if err := loadDotEnv(path); err != nil {
+	if err := LoadDotEnv(path); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := loadConfig()
+	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,10 +43,10 @@ func TestLoadDotEnvDoesNotOverrideEnvironment(t *testing.T) {
 	}
 	t.Setenv("HTTP_ADDR", ":9092")
 
-	if err := loadDotEnv(path); err != nil {
+	if err := LoadDotEnv(path); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := loadConfig()
+	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}

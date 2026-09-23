@@ -19,6 +19,7 @@ import {
   Users,
 } from "lucide-vue-next";
 import { api,session } from "./api";
+import ToastHost from "./components/ToastHost.vue";
 const route = useRoute(),
   router = useRouter(),
   collapsed = ref(localStorage.getItem("sidebar-collapsed") === "1"),
@@ -64,6 +65,7 @@ function go(path: string) {
 }
 </script>
 <template>
+  <ToastHost />
   <router-view v-if="login" />
   <div v-else class="app-shell" :class="{ collapsed }">
     <div v-if="mobile" class="mobile-shade" @click="mobile = false"></div>
