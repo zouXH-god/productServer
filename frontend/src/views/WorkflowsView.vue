@@ -75,7 +75,7 @@ const savedSignature=ref("");
 let leaveResolver:((value:boolean)=>void)|undefined;
 const canDevelop=computed(()=>['owner','admin','developer'].includes(project.value?.role));
 const router = useRouter();
-const { addEdges, fitView } = useVueFlow();
+const { addEdges, fitView } = useVueFlow("workflow-editor");
 const modules: any = {
   archive: {
     name: "归档压缩",
@@ -550,6 +550,7 @@ function applyAICanvas(canvas:any){
       </aside>
       <div class="flow-canvas">
         <VueFlow
+          id="workflow-editor"
           v-model:nodes="nodes"
           v-model:edges="edges"
           fit-view-on-init

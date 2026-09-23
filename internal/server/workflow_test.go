@@ -141,7 +141,7 @@ func TestActionArchiveAndRemoteExtractCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"unzip -oq", "'/opt/my app'", "'/tmp/artifact.zip.extracting'", "chmod -R 0750 '/tmp/artifact.zip.extracting'", "cp -a", "rm -f"} {
+	for _, expected := range []string{"unzip -oq", "'/opt/my app'", "'/tmp/artifact.zip.extracting'", "chmod -R 0750 '/tmp/artifact.zip.extracting'", "cp -a", "rm -f", "[阶段开始]", "[阶段成功]", "[阶段失败]", "解压产物", "设置文件权限", "复制到目标目录"} {
 		if !strings.Contains(command, expected) {
 			t.Fatalf("command missing %q: %s", expected, command)
 		}

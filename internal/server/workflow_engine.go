@@ -343,12 +343,13 @@ func executeNode(parent context.Context, db *gorm.DB, cfg Config, run WorkflowRu
 		ctx, cancel := context.WithTimeout(parent, timeout)
 		now := time.Now()
 		db.Model(&nr).Updates(map[string]any{"status": "running", "attempts": attempt, "started_at": now})
-		log.write(n.ID, "system", fmt.Sprintf("starting %s attempt %d", n.Type, attempt))
-		_, _, e := executeModule(ctx, db, cfg, run, p, r, n, input, work, log)
+		log.write(n.ID, "stage", fmt.Sprintf("开始执行：%s（第 %d 次）", moduleDisplayName(n.Type), attempt))
+		_, _, e := executeModule(ctx, db, cfg, run, p, r, n, n.ID, input, work, log)
 		cancel()
 		if e == nil {
 			now = time.Now()
 			db.Model(&nr).Updates(map[string]any{"status": "succeeded", "finished_at": now})
+			log.write(n.ID, "stage", fmt.Sprintf("执行成功：%s", moduleDisplayName(n.Type)))
 			return true
 		}
 		log.write(n.ID, "stderr", e.Error())

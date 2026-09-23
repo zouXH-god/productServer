@@ -703,7 +703,7 @@ func executeRuntimeNode(parent context.Context, db *gorm.DB, cfg Config, run Wor
 		n.Config["connection_id"] = values.Server.ID
 	}
 	db.Model(&nr).Updates(map[string]any{"status": "running", "started_at": time.Now()})
-	log.write(key, "system", fmt.Sprintf("开始执行 %s", n.Type))
+	log.write(key, "stage", fmt.Sprintf("开始执行：%s", moduleDisplayName(n.Type)))
 	var outputs map[string]any
 	var matched *bool
 	attempts := n.Retries + 1
@@ -712,10 +712,14 @@ func executeRuntimeNode(parent context.Context, db *gorm.DB, cfg Config, run Wor
 	}
 	for attempt := 1; attempt <= attempts; attempt++ {
 		db.Model(&nr).Update("attempts", attempt)
-		outputs, matched, err = executeModule(ctx, db, cfg, run, p, r, n, input, work, log)
+		if attempt > 1 {
+			log.write(key, "stage", fmt.Sprintf("开始第 %d 次重试", attempt-1))
+		}
+		outputs, matched, err = executeModule(ctx, db, cfg, run, p, r, n, key, input, work, log)
 		if err == nil {
 			break
 		}
+		log.write(key, "stderr", fmt.Sprintf("第 %d 次执行失败：%v", attempt, err))
 	}
 	if err != nil {
 		db.Model(&nr).Updates(map[string]any{"status": "failed", "error_summary": err.Error(), "finished_at": time.Now()})
@@ -743,5 +747,6 @@ func executeRuntimeNode(parent context.Context, db *gorm.DB, cfg Config, run Wor
 		}
 	}
 	db.Model(&nr).Updates(updates)
+	log.write(key, "stage", fmt.Sprintf("执行成功：%s", moduleDisplayName(n.Type)))
 	return nodeResult{ID: n.ID, OK: true, Matched: matched, Outputs: outputs}
 }
