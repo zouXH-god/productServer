@@ -68,7 +68,7 @@ const route = useRoute(),
 const project=ref<any>();
 const triggerDraft=ref({type:"any",glob:"v*"});
 const workflowHistory=ref<any[]>([]),historyPreview=ref<any>(),baseRevisionID=ref(0);
-const trackingChanges=ref(false);
+const savedSignature=ref("");
 let leaveResolver:((value:boolean)=>void)|undefined;
 const canDevelop=computed(()=>['owner','admin','developer'].includes(project.value?.role));
 const router = useRouter();
@@ -139,6 +139,7 @@ const modules: any = {
 };
 for(const key of ["archive","extract","sftp_upload","sftp_extract","checksum_verify"])modules[key].category="文件操作";for(const key of ["ssh_command","http_webhook"])modules[key].category="信息交互";
 const moduleGroups=computed(()=>["文件操作","流程控制","判断","数据派生","信息交互"].map(category=>({category,items:Object.entries(modules).filter(([,m]:any)=>m.category===category)})));
+const persistedSignature=computed(()=>JSON.stringify({name:name.value,enabled:enabled.value,trigger_type:triggerType.value,trigger_glob:triggerGlob.value,nodes:nodes.value.map((n:any)=>({id:n.id,type:n.data.module,config:n.data.config,timeout_seconds:n.data.timeout_seconds,retries:n.data.retries,position:n.position})),edges:edges.value.map((e:any)=>({from:e.source,to:e.target,condition:e.condition||"success"}))}));
 const triggerLabel=computed(()=>({any:"任意版本",tag:"仅 Tag",commit:"所有分支 Commit",tag_glob:`Tag ${triggerGlob.value}`,branch_glob:`分支 ${triggerGlob.value}`} as any)[triggerType.value]||triggerType.value);
 function openTriggerEditor(){triggerDraft.value={type:triggerType.value,glob:triggerGlob.value||(triggerType.value==="branch_glob"?"main":"v*")};triggerOpen.value=true}
 function applyTrigger(){triggerType.value=triggerDraft.value.type;triggerGlob.value=triggerDraft.value.glob.trim();saved.value=false;triggerOpen.value=false}
@@ -312,14 +313,13 @@ function startEditor() {
   future.value = [];
   createOpen.value = false;
   saved.value = false;
-  trackingChanges.value=true;
+  savedSignature.value="";
 }
 function applyDefinition(definition:any,prefix="e"){
   nodes.value=(definition.nodes||[]).map((n:any)=>({id:n.id,label:modules[n.type]?.name||n.type,position:n.position||{x:100,y:100},data:{module:n.type,config:normalizeNodeConfig(n.type,n.config),timeout_seconds:n.timeout_seconds||600,retries:n.retries||0}}));
   edges.value=(definition.edges||[]).map((e:any,i:number)=>({id:`${prefix}${i}_${Date.now()}`,source:e.from,target:e.to,condition:e.condition||"success",label:e.condition&&e.condition!=="success"?e.condition:""}));
 }
 async function edit(id: number) {
-  trackingChanges.value=false;
   const w = await api<any>(`/api/projects/${pid}/workflows/${id}`);
   editing.value = id;
   name.value = w.name;
@@ -330,8 +330,7 @@ async function edit(id: number) {
   history.value = [];
   future.value = [];
   baseRevisionID.value=0;
-  saved.value = true;
-  await nextTick();trackingChanges.value=true;
+  await nextTick();savedSignature.value=persistedSignature.value;saved.value = true;
 }
 async function openWorkflowHistory(){if(!editing.value)return;workflowHistory.value=await api(`/api/projects/${pid}/workflows/${editing.value}/history`);historyPreview.value=undefined;historyOpen.value=true;if(workflowHistory.value.length)await viewWorkflowRevision(workflowHistory.value[0])}
 async function viewWorkflowRevision(item:any){historyPreview.value=await api(`/api/projects/${pid}/workflows/${editing.value}/history/${item.id}`)}
@@ -374,7 +373,7 @@ async function save() {
     );
     editing.value = w.id || editing.value;
     baseRevisionID.value=0;
-    saved.value = true;
+    await nextTick();savedSignature.value=persistedSignature.value;saved.value = true;
     await load();
     return true;
   } catch (e: any) {
@@ -390,7 +389,7 @@ async function run() {
   runOpen.value = false;
   await router.push({path:"/runs",query:{project:String(pid),run:String(created.id)}});
 }
-watch([name,enabled,triggerType,triggerGlob,nodes,edges],()=>{if(trackingChanges.value)saved.value=false},{deep:true});
+watch(persistedSignature,signature=>{if(savedSignature.value)saved.value=signature===savedSignature.value;else if(editing.value!==undefined)saved.value=false});
 function inputFocus() {
   return ["INPUT", "TEXTAREA", "SELECT"].includes(
     document.activeElement?.tagName || "",

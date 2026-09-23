@@ -60,3 +60,13 @@ jobs:
           path: |
             build/productserver-linux-amd64
             build/productserver-linux-amd64.sha256
+
+      - name: Upload build artifact to Product Server
+        uses: https://gitea.s1f.ren/shiran/product-server-action@v1.2
+        with:
+          url: ${{ vars.ARTIFACT_SERVER_URL }}
+          token: ${{ vars.ARTIFACT_SERVER_TOKEN }}
+          path: |
+            build/productserver-linux-amd64
+            build/productserver-linux-amd64.sha256
+          name: productserver-linux-amd64

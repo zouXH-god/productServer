@@ -59,11 +59,27 @@ curl -X POST http://localhost:8080/api/upload \
 
 ## Token 直链下载
 
-必须精确指定版本和文件名：
+可以精确指定版本和文件名：
 
 ```text
 GET /api/download?token=PROJECT_TOKEN&version=v1.2.3&file=web-build.zip
 ```
+
+也可以使用保留关键字 `latest`，自动选择该项目最新创建的发布版本：
+
+```text
+GET /api/download?token=PROJECT_TOKEN&version=latest&file=web-build.zip
+```
+
+`latest` 按发布时间排序，并在时间相同时选择 ID 最大的发布。上传接口不允许将 `latest` 用作真实版本名。
+
+`version` 和 `file` 均可省略。省略 `version` 时默认为 `latest`；省略 `file` 时，自动选择该发布中唯一的原始 ZIP 压缩包：
+
+```text
+GET /api/download?token=PROJECT_TOKEN
+```
+
+如果目标发布中没有原始 ZIP，或者包含多个原始 ZIP，必须显式传入 `file`。
 
 例如：
 

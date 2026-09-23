@@ -576,9 +576,12 @@ func (a *App) download(c *gin.Context) {
 }
 func (a *App) tokenDownload(c *gin.Context) {
 	raw, version, filename := c.Query("token"), strings.TrimSpace(c.Query("version")), c.Query("file")
-	if raw == "" || version == "" || filename == "" {
-		fail(c, 400, "invalid_request", "token, version and file are required")
+	if raw == "" {
+		fail(c, 400, "invalid_request", "token is required")
 		return
+	}
+	if version == "" {
+		version = "latest"
 	}
 	token, ok := a.findProjectToken(raw)
 	if !ok {
@@ -586,12 +589,32 @@ func (a *App) tokenDownload(c *gin.Context) {
 		return
 	}
 	var release Release
-	if a.db.Where("project_id = ? AND version = ?", token.ProjectID, version).First(&release).Error != nil {
+	releaseQuery := a.db.Where("project_id = ?", token.ProjectID)
+	if version == "latest" {
+		releaseQuery = releaseQuery.Order("created_at DESC").Order("id DESC")
+	} else {
+		releaseQuery = releaseQuery.Where("version = ?", version)
+	}
+	if releaseQuery.First(&release).Error != nil {
 		fail(c, 404, "not_found", "release not found")
 		return
 	}
 	var file ArtifactFile
-	if a.db.Where("release_id = ? AND original_name = ?", release.ID, filename).First(&file).Error != nil {
+	if filename == "" {
+		var files []ArtifactFile
+		a.db.Where("release_id = ?", release.ID).Find(&files)
+		archives := make([]ArtifactFile, 0, 1)
+		for _, candidate := range files {
+			if candidate.Kind == "uploaded" && strings.EqualFold(filepath.Ext(candidate.OriginalName), ".zip") {
+				archives = append(archives, candidate)
+			}
+		}
+		if len(archives) != 1 {
+			fail(c, 400, "ambiguous_file", "file is required unless the release contains exactly one uploaded ZIP archive")
+			return
+		}
+		file = archives[0]
+	} else if a.db.Where("release_id = ? AND original_name = ?", release.ID, filename).First(&file).Error != nil {
 		fail(c, 404, "not_found", "file not found")
 		return
 	}
@@ -618,8 +641,8 @@ func (a *App) upload(c *gin.Context) {
 		return
 	}
 	version := strings.TrimSpace(c.PostForm("version"))
-	if version == "" || len(version) > 255 {
-		fail(c, 400, "invalid_version", "version is required and must not exceed 255 characters")
+	if version == "" || len(version) > 255 || version == "latest" {
+		fail(c, 400, "invalid_version", "version is required, must not exceed 255 characters, and must not be the reserved value latest")
 		return
 	}
 	headers := c.Request.MultipartForm.File["files"]

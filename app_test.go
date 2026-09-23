@@ -530,6 +530,37 @@ func TestTokenUploadDuplicateAndDownload(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("token download=%d %s", w.Code, w.Body.String())
 	}
+	b, ct = uploadBody(t, "v2", map[string]string{"app.zip": "newest"})
+	w = request(t, a, "POST", "/api/upload", b, map[string]string{"Content-Type": ct, "Authorization": "Bearer " + token})
+	if w.Code != 201 {
+		t.Fatalf("latest fixture upload=%d %s", w.Code, w.Body.String())
+	}
+	w = request(t, a, "GET", "/api/download?token="+token+"&version=latest&file=app.zip", nil, nil)
+	if w.Code != 200 || w.Body.String() != "newest" {
+		t.Fatalf("latest download=%d %q", w.Code, w.Body.String())
+	}
+	w = request(t, a, "GET", "/api/download?token="+token, nil, nil)
+	if w.Code != 200 || w.Body.String() != "newest" {
+		t.Fatalf("default download=%d %q", w.Code, w.Body.String())
+	}
+	w = request(t, a, "GET", "/api/download?token="+token+"&version=v1", nil, nil)
+	if w.Code != 200 || w.Body.Len() == 0 {
+		t.Fatalf("default file download=%d %q", w.Code, w.Body.String())
+	}
+	b, ct = uploadBody(t, "v3", map[string]string{"one.zip": "one", "two.zip": "two"})
+	w = request(t, a, "POST", "/api/upload", b, map[string]string{"Content-Type": ct, "Authorization": "Bearer " + token})
+	if w.Code != 201 {
+		t.Fatalf("ambiguous fixture upload=%d %s", w.Code, w.Body.String())
+	}
+	w = request(t, a, "GET", "/api/download?token="+token+"&version=v3", nil, nil)
+	if w.Code != 400 {
+		t.Fatalf("ambiguous default file=%d %s", w.Code, w.Body.String())
+	}
+	b, ct = uploadBody(t, "latest", map[string]string{"app.zip": "reserved"})
+	w = request(t, a, "POST", "/api/upload", b, map[string]string{"Content-Type": ct, "Authorization": "Bearer " + token})
+	if w.Code != 400 {
+		t.Fatalf("reserved latest upload=%d %s", w.Code, w.Body.String())
+	}
 }
 func TestUniqueTokenRotation(t *testing.T) {
 	a, _ := testApp(t)
