@@ -15,6 +15,7 @@ import {
   Pencil,
   History,
   GitBranch,
+  Download,
 } from "lucide-vue-next";
 import { api, authDownload } from "../api";
 import Modal from "../components/Modal.vue";
@@ -34,6 +35,7 @@ const route = useRoute(),
   runs = ref<any[]>([]),
   targetProjects = ref<any[]>([]),
   selected = ref<any>(),
+  accessRecords = ref<any[]>([]),
   rotating = ref(false),
   newToken = ref(""),
   deleting = ref(false),
@@ -51,7 +53,10 @@ async function addMember(){await api(`/api/projects/${id}/members`,{method:'POST
 async function setRole(member:any,role:string){await api(`/api/projects/${id}/members/${member.user_id}`,{method:'PUT',body:JSON.stringify({role})});await load()}
 async function removeMember(member:any){await api(`/api/projects/${id}/members/${member.user_id}`,{method:'DELETE'});await load()}
 async function detail(r: any) {
-  selected.value = await api(`/api/projects/${id}/releases/${r.id}`);
+  [selected.value, accessRecords.value] = await Promise.all([
+    api(`/api/projects/${id}/releases/${r.id}`),
+    api<any[]>(`/api/projects/${id}/releases/${r.id}/accesses`),
+  ]);
 }
 function downloadArtifact(file: any) {
   authDownload(
@@ -189,6 +194,7 @@ onMounted(load);
           <div class="grow">
             <h3>{{ r.version }}</h3>
             <p class="release-reference"><span v-if="r.branch" class="branch-badge"><GitBranch/>{{r.branch}}</span><span>{{ r.ref_type || "未知来源" }} · {{ r.commit_sha?.slice(0, 10) || "无提交信息" }}</span></p>
+            <small class="release-access"><Download/>访问 {{ r.access_count || 0 }} 次</small>
           </div>
           <time>{{ new Date(r.created_at).toLocaleString() }}</time></button
         ><EmptyState
@@ -218,7 +224,17 @@ onMounted(load);
         :files="selected.files || []"
         action="download"
         @select="downloadArtifact"
-      /> </template></Drawer
+      />
+      <div class="access-heading"><h3>访问记录</h3><span>{{ selected.access_count || 0 }} 次</span></div>
+      <div class="access-list">
+        <div v-for="record in accessRecords" :key="record.id" class="access-row">
+          <Download/>
+          <div class="grow"><b>{{ record.file_name }}</b><small>{{ record.ip_address }} · {{ record.access_method === 'project_token' ? '项目 Token' : '登录用户' }} · {{ record.http_method }}</small></div>
+          <time>{{ new Date(record.created_at).toLocaleString() }}</time>
+        </div>
+        <EmptyState v-if="!accessRecords.length" title="暂无访问记录" text="产物下载成功后将在这里记录。"/>
+      </div>
+      </template></Drawer
   ><Modal
 	 v-model="memberOpen" title="添加项目成员" description="输入已注册用户名并分配角色。"><label>用户名<input v-model="memberForm.username"></label><label>角色<select v-model="memberForm.role"><option value="admin" :disabled="project?.role!=='owner'">管理员</option><option value="developer">开发者</option><option value="viewer">只读</option></select></label><div class="panel-actions"><button class="btn" @click="addMember">添加成员</button></div></Modal><Modal
     v-model="rotating"
@@ -264,4 +280,16 @@ onMounted(load);
 .release-reference { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .branch-badge { display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; border-radius: 999px; background: var(--surface-2); color: var(--text); font-size: 11px; }
 .branch-badge svg { width: 13px; height: 13px; }
+.release-access { display: inline-flex; align-items: center; gap: 5px; margin-top: 5px; color: var(--muted); }
+.release-access svg { width: 13px; height: 13px; }
+.access-heading { display: flex; align-items: center; justify-content: space-between; margin-top: 22px; }
+.access-heading h3 { margin: 0; }
+.access-heading span { color: var(--muted); font-size: 12px; }
+.access-list { display: grid; gap: 8px; margin-top: 10px; }
+.access-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; }
+.access-row > svg { width: 16px; height: 16px; flex: none; }
+.access-row b, .access-row small { display: block; overflow-wrap: anywhere; }
+.access-row small, .access-row time { color: var(--muted); font-size: 11px; }
+.access-row time { flex: none; }
+@media (max-width: 640px) { .access-row { align-items: flex-start; } .access-row time { display: none; } }
 </style>

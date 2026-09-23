@@ -522,13 +522,35 @@ func TestTokenUploadDuplicateAndDownload(t *testing.T) {
 		t.Fatalf("idempotent upload=%d %s", w.Code, w.Body.String())
 	}
 	f := rel.Files[0]
-	w = request(t, a, "GET", "/api/projects/1/releases/"+itoa(rel.ID)+"/files/"+itoa(f.ID)+"/download", nil, map[string]string{"Authorization": "Bearer " + jwt})
+	w = request(t, a, "GET", "/api/projects/1/releases/"+itoa(rel.ID)+"/files/"+itoa(f.ID)+"/download", nil, map[string]string{"Authorization": "Bearer " + jwt, "X-Forwarded-For": "203.0.113.10"})
 	if w.Code != 200 {
 		t.Fatalf("download=%d %s", w.Code, w.Body.String())
 	}
-	w = request(t, a, "GET", "/api/download?token="+token+"&version=v1&file="+f.OriginalName, nil, nil)
+	w = request(t, a, "GET", "/api/download?token="+token+"&version=v1&file="+f.OriginalName, nil, map[string]string{"X-Forwarded-For": "203.0.113.11"})
 	if w.Code != 200 {
 		t.Fatalf("token download=%d %s", w.Code, w.Body.String())
+	}
+	var accessLogs []ArtifactAccessLog
+	if err := a.db.Where("release_id = ?", rel.ID).Order("id").Find(&accessLogs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(accessLogs) != 2 || accessLogs[0].AccessMethod != "jwt" || accessLogs[1].AccessMethod != "project_token" {
+		t.Fatalf("unexpected access logs: %#v", accessLogs)
+	}
+	if accessLogs[0].ArtifactFileID != f.ID || accessLogs[0].IPAddress != "203.0.113.10" || accessLogs[1].IPAddress != "203.0.113.11" {
+		t.Fatalf("access metadata not recorded: %#v", accessLogs)
+	}
+	w = request(t, a, "GET", "/api/projects/1/releases", nil, map[string]string{"Authorization": "Bearer " + jwt})
+	if w.Code != 200 {
+		t.Fatalf("release list=%d %s", w.Code, w.Body.String())
+	}
+	var listed []Release
+	if err := json.Unmarshal(w.Body.Bytes(), &listed); err != nil || len(listed) != 1 || listed[0].AccessCount != 2 {
+		t.Fatalf("release access count missing: %s", w.Body.String())
+	}
+	w = request(t, a, "GET", "/api/projects/1/releases/"+itoa(rel.ID)+"/accesses", nil, map[string]string{"Authorization": "Bearer " + jwt})
+	if w.Code != 200 || !bytes.Contains(w.Body.Bytes(), []byte(`"file_name":"`+f.OriginalName+`"`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"ip_address":"203.0.113.11"`)) {
+		t.Fatalf("access history unavailable: %d %s", w.Code, w.Body.String())
 	}
 	b, ct = uploadBody(t, "v2", map[string]string{"app.zip": "newest"})
 	w = request(t, a, "POST", "/api/upload", b, map[string]string{"Content-Type": ct, "Authorization": "Bearer " + token})

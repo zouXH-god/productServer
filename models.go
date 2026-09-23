@@ -45,16 +45,17 @@ type ProjectToken struct {
 	CreatedAt  time.Time  `json:"created_at"`
 }
 type Release struct {
-	ID         uint           `json:"id" gorm:"primaryKey"`
-	ProjectID  uint           `json:"project_id" gorm:"uniqueIndex:idx_release_project_version;not null"`
-	Version    string         `json:"version" gorm:"uniqueIndex:idx_release_project_version;size:255;not null"`
-	CommitSHA  string         `json:"commit_sha"`
-	Branch     string         `json:"branch"`
-	JobURL     string         `json:"job_url"`
-	PipelineID string         `json:"pipeline_id"`
-	RefType    string         `json:"ref_type" gorm:"size:16"`
-	CreatedAt  time.Time      `json:"created_at"`
-	Files      []ArtifactFile `json:"files,omitempty" gorm:"constraint:OnDelete:CASCADE"`
+	ID          uint           `json:"id" gorm:"primaryKey"`
+	ProjectID   uint           `json:"project_id" gorm:"uniqueIndex:idx_release_project_version;not null"`
+	Version     string         `json:"version" gorm:"uniqueIndex:idx_release_project_version;size:255;not null"`
+	CommitSHA   string         `json:"commit_sha"`
+	Branch      string         `json:"branch"`
+	JobURL      string         `json:"job_url"`
+	PipelineID  string         `json:"pipeline_id"`
+	RefType     string         `json:"ref_type" gorm:"size:16"`
+	CreatedAt   time.Time      `json:"created_at"`
+	Files       []ArtifactFile `json:"files,omitempty" gorm:"constraint:OnDelete:CASCADE"`
+	AccessCount int64          `json:"access_count" gorm:"->;-:migration"`
 }
 
 type SSHCredential struct {
@@ -250,4 +251,16 @@ type ArtifactFile struct {
 	Kind         string    `json:"kind" gorm:"size:16;not null;default:uploaded"`
 	ArchiveName  string    `json:"archive_name,omitempty" gorm:"size:255"`
 	CreatedAt    time.Time `json:"created_at"`
+}
+
+type ArtifactAccessLog struct {
+	ID             uint      `json:"id" gorm:"primaryKey"`
+	ProjectID      uint      `json:"project_id" gorm:"index;not null"`
+	ReleaseID      uint      `json:"release_id" gorm:"index;not null"`
+	ArtifactFileID uint      `json:"artifact_file_id" gorm:"index;not null"`
+	UserID         *uint     `json:"user_id,omitempty" gorm:"index"`
+	IPAddress      string    `json:"ip_address" gorm:"size:128;not null"`
+	AccessMethod   string    `json:"access_method" gorm:"size:32;not null"`
+	HTTPMethod     string    `json:"http_method" gorm:"size:16;not null"`
+	CreatedAt      time.Time `json:"created_at" gorm:"index"`
 }

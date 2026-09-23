@@ -112,6 +112,7 @@ func (a *App) routes() {
 	api.POST("/projects/:id/token/rotate", a.rotateToken)
 	api.GET("/projects/:id/releases", a.listReleases)
 	api.GET("/projects/:id/releases/:releaseId", a.getRelease)
+	api.GET("/projects/:id/releases/:releaseId/accesses", a.listArtifactAccesses)
 	api.GET("/projects/:id/releases/:releaseId/files/:fileId/download", a.download)
 	a.workflowRoutes(api)
 	a.scheduleRoutes(api)
@@ -382,6 +383,9 @@ func (a *App) deleteProject(c *gin.Context) {
 		if err := tx.Where("project_id = ?", id).Find(&releases).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("project_id = ?", id).Delete(&ArtifactAccessLog{}).Error; err != nil {
+			return err
+		}
 		for _, r := range releases {
 			if err := tx.Where("release_id = ?", r.ID).Delete(&ArtifactFile{}).Error; err != nil {
 				return err
@@ -524,7 +528,11 @@ func (a *App) listReleases(c *gin.Context) {
 		return
 	}
 	var items []Release
-	a.db.Where("project_id = ?", id).Order("id desc").Find(&items)
+	a.db.Model(&Release{}).
+		Select("releases.*, (SELECT COUNT(*) FROM artifact_access_logs WHERE artifact_access_logs.release_id = releases.id) AS access_count").
+		Where("releases.project_id = ?", id).
+		Order("releases.id desc").
+		Scan(&items)
 	c.JSON(200, items)
 }
 func (a *App) getRelease(c *gin.Context) {
@@ -545,11 +553,52 @@ func (a *App) getRelease(c *gin.Context) {
 		return
 	}
 	var r Release
-	if a.db.Preload("Files").Where("id = ? AND project_id = ?", rid, id).First(&r).Error != nil {
+	if a.db.Preload("Files").
+		Select("releases.*, (SELECT COUNT(*) FROM artifact_access_logs WHERE artifact_access_logs.release_id = releases.id) AS access_count").
+		Where("releases.id = ? AND releases.project_id = ?", rid, id).
+		First(&r).Error != nil {
 		fail(c, 404, "not_found", "release not found")
 		return
 	}
 	c.JSON(200, r)
+}
+
+type artifactAccessResponse struct {
+	ID           uint      `json:"id"`
+	IPAddress    string    `json:"ip_address"`
+	AccessMethod string    `json:"access_method"`
+	HTTPMethod   string    `json:"http_method"`
+	FileID       uint      `json:"file_id"`
+	FileName     string    `json:"file_name"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+func (a *App) listArtifactAccesses(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	if _, _, ok = a.projectAccess(c, id, projectView); !ok {
+		return
+	}
+	rid, ok := parseID(c, "releaseId")
+	if !ok {
+		return
+	}
+	var releaseCount int64
+	if a.db.Model(&Release{}).Where("id = ? AND project_id = ?", rid, id).Count(&releaseCount).Error != nil || releaseCount == 0 {
+		fail(c, 404, "not_found", "release not found")
+		return
+	}
+	var items []artifactAccessResponse
+	a.db.Table("artifact_access_logs").
+		Select("artifact_access_logs.id, artifact_access_logs.ip_address, artifact_access_logs.access_method, artifact_access_logs.http_method, artifact_access_logs.artifact_file_id AS file_id, artifact_files.original_name AS file_name, artifact_access_logs.created_at").
+		Joins("JOIN artifact_files ON artifact_files.id = artifact_access_logs.artifact_file_id").
+		Where("artifact_access_logs.project_id = ? AND artifact_access_logs.release_id = ?", id, rid).
+		Order("artifact_access_logs.id DESC").
+		Limit(200).
+		Scan(&items)
+	c.JSON(200, items)
 }
 func (a *App) download(c *gin.Context) {
 	id, ok := parseID(c, "id")
@@ -572,7 +621,8 @@ func (a *App) download(c *gin.Context) {
 		fail(c, 404, "not_found", "file not found")
 		return
 	}
-	a.serveArtifact(c, id, rid, f)
+	uid := c.MustGet("userID").(uint)
+	a.serveArtifact(c, id, rid, f, "jwt", &uid)
 }
 func (a *App) tokenDownload(c *gin.Context) {
 	raw, version, filename := c.Query("token"), strings.TrimSpace(c.Query("version")), c.Query("file")
@@ -620,10 +670,20 @@ func (a *App) tokenDownload(c *gin.Context) {
 	}
 	now := time.Now()
 	_ = a.db.Model(&token).Update("last_used_at", now).Error
-	a.serveArtifact(c, token.ProjectID, release.ID, file)
+	a.serveArtifact(c, token.ProjectID, release.ID, file, "project_token", nil)
 }
-func (a *App) serveArtifact(c *gin.Context, projectID, releaseID uint, f ArtifactFile) {
+func (a *App) serveArtifact(c *gin.Context, projectID, releaseID uint, f ArtifactFile, accessMethod string, userID *uint) {
 	path := filepath.Join(a.cfg.StorageDir, strconv.FormatUint(uint64(projectID), 10), strconv.FormatUint(uint64(releaseID), 10), f.StoredName)
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		fail(c, 404, "not_found", "artifact file not found on storage")
+		return
+	}
+	_ = a.db.Create(&ArtifactAccessLog{
+		ProjectID: projectID, ReleaseID: releaseID, ArtifactFileID: f.ID,
+		UserID: userID, IPAddress: c.ClientIP(), AccessMethod: accessMethod,
+		HTTPMethod: c.Request.Method,
+	}).Error
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename*=UTF-8''%s", url.PathEscape(f.OriginalName)))
 	c.File(path)
 }
