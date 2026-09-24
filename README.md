@@ -2,6 +2,16 @@
 
 一个用于保存 Git CI 发布产物的最小应用。后端使用 Gin + GORM，前端使用 Vue 3；支持 SQLite、MySQL 和 PostgreSQL，生产构建为内嵌前端资源的单一二进制文件。
 
+## 运行截图
+
+### 项目与产物管理
+
+![项目与产物管理](images/projuct.png)
+
+### 可视化工作流编辑
+
+![可视化工作流编辑](images/worker.png)
+
 ## 项目结构
 
 ```text
@@ -157,3 +167,7 @@ Tag 构建 CI 会在 `CGO_ENABLED=0` 下生成 Linux、Windows、macOS 的 amd64
 每次向 Gitea 分支或 `v*` Tag 推送后，`github-mirror.yaml` 会将源码同步到 GitHub，并在镜像提交中移除 `.gitea/workflows`。镜像提交会把 README 内的 Action `uses:` 地址固定规范化为 `zouXH-god/product-server-action@版本`。需要在 Gitea 仓库中配置变量 `MIRROR_REPOSITORY=owner/repository`，以及 Secret `MIRROR_FINE_GRAINED_TOKEN`。Fine-grained PAT 必须针对目标 GitHub 仓库同时授予 `Contents: Read and write` 与 `Workflows: Read and write`，否则 GitHub 会拒绝包含 `.github/workflows` 的推送。同步会强制更新同名 GitHub 分支或 Tag，因此目标仓库应仅作为镜像使用。
 
 GitHub 收到 `v*` Tag 后，仅在 GitHub 运行 `.github/workflows/release.yaml`：执行前后端测试，构建 Linux、Windows、macOS 的 amd64/arm64 发布压缩包，生成 `SHA256SUMS`，并使用 GitHub 内置 `GITHUB_TOKEN` 创建 Release 和上传附件。
+
+## 开源许可
+
+本项目基于 [MIT License](LICENSE) 开源。你可以自由使用、修改和分发，但需保留原始版权及许可声明。
