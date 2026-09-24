@@ -12,6 +12,10 @@
 
 ![可视化工作流编辑](images/worker.png)
 
+## 使用方法
+
+完整的安装部署、环境变量、systemd 服务、API 和 Action 使用说明请查看 [使用文档](document.md)。
+
 ## 项目结构
 
 ```text
