@@ -1,6 +1,18 @@
 # Product Server
 
-一个用于保存 Git CI 发布产物的最小应用。后端使用 Gin + GORM，前端使用 Vue 3；支持 SQLite、MySQL 和 PostgreSQL，生产构建为内嵌前端资源的单一二进制文件。
+> 把 CI 产物管理和自动部署，变成一条看得见的流水线。
+
+[简体中文](README.md) · [English](README_EN.md)
+
+[![Release](https://img.shields.io/github/v/release/zouXH-god/productServer?display_name=tag&sort=semver)](https://github.com/zouXH-god/productServer/releases)
+[![GitHub Release](https://github.com/zouXH-god/productServer/actions/workflows/release.yaml/badge.svg)](https://github.com/zouXH-god/productServer/actions/workflows/release.yaml)
+[![Go](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![Vue](https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white)](https://vuejs.org/)
+[![License](https://img.shields.io/badge/license-MIT-black.svg)](LICENSE)
+
+Product Server 是一套自托管的 CI 产物管理与可视化部署平台。它可以接收 GitHub、Gitea 等 CI 任务产生的构建文件，保存每个发布版本，并通过可视化工作流完成上传、解压、校验、SSH 命令和多服务器部署。
+
+无需把复杂的部署脚本散落在各个仓库中：上传一次产物，后续发布流程都可以在一个界面里配置、运行、追踪和复用。
 
 ## 运行截图
 
@@ -12,54 +24,115 @@
 
 ![可视化工作流编辑](images/worker.png)
 
-## 使用方法
+## 主要亮点
 
-完整的安装部署、环境变量、systemd 服务、API 和 Action 使用说明请查看 [使用文档](document.md)。
+- **统一管理 CI 产物**：按项目、版本、分支和文件保存构建结果，支持访问统计、容量限制和自动清理。
+- **可视化部署工作流**：通过 DAG 画布组合压缩、解压、SFTP、SSH、Webhook、判断、循环和多服务器任务。
+- **上传即可触发**：支持任意版本、Tag、Commit、Tag glob 和分支规则，上传完成后自动创建运行。
+- **多服务器批量执行**：同一段流程可以串行或并行运行在多台服务器上，并分别保存状态、日志和输出。
+- **任务可靠恢复**：Worker 使用数据库租约和心跳领取任务，异常退出后可由其他 Worker 恢复。
+- **实时运行视图**：像查看 GitHub Actions 一样查看节点状态、执行顺序、实时日志和结构化输出。
+- **完整权限体系**：支持注册、系统管理员及项目所有者、管理员、开发者、只读成员。
+- **定时工作流**：除产物上传触发外，也可以创建 Cron 定时项目。
+- **AI 辅助编排**：可接入 OpenAI Chat Completions 兼容接口，通过对话生成和优化当前工作流画布。
+- **轻量部署**：前端嵌入 Go 二进制，支持 SQLite、MySQL 和 PostgreSQL，无需单独部署静态站点。
 
-## 项目结构
+## 适用场景
 
-```text
-.
-├── main.go                    # 进程入口与 server/worker 模式选择
-├── internal/
-│   ├── config/                # 环境变量、.env 与配置校验
-│   ├── domain/                # GORM 领域模型
-│   ├── security/              # Secret 加密与解密
-│   └── server/                # HTTP API、AI、工作流、调度器和存储编排
-│       └── frontend/dist/     # 前端嵌入产物
-├── frontend/                  # Vue 3 管理界面源码
-├── uploader/                  # 独立 Git 仓库，不纳入主仓库提交
-└── .gitea/.github             # Gitea 与 GitHub CI
+- 保存 GitHub Actions、Gitea Actions 或其他 CI 系统的构建产物。
+- 将前端、Go 服务或安装包自动发布到一台或多台服务器。
+- 替代散落在仓库中的 SSH/SFTP 部署脚本。
+- 管理测试环境、内部服务和私有化项目的发布流程。
+- 在不引入大型 DevOps 平台的情况下搭建轻量、自托管的发布中心。
+
+## 三分钟快速开始
+
+### 下载 Release 直接运行（推荐）
+
+前端已经嵌入可执行文件，无需安装 Go、Node.js 或单独部署静态资源。请从 [GitHub Releases](https://github.com/zouXH-god/productServer/releases/latest) 下载对应系统和架构的压缩包。
+
+Linux amd64 示例：
+
+```bash
+curl -LO https://github.com/zouXH-god/productServer/releases/latest/download/productserver-linux-amd64.tar.gz
+tar -xzf productserver-linux-amd64.tar.gz
+mv productserver-linux-amd64 productserver
+chmod +x productserver
+./productserver server
 ```
 
-业务实现位于 `internal`，不会作为公共 Go SDK 被外部项目误用；根目录只保留可执行程序入口和工程配置。
+在另一个终端启动 Worker：
 
-## 开发
+```bash
+./productserver worker
+```
 
-需要 Go 1.22+、Node.js 20+。默认使用当前目录的 SQLite 数据库，初始账号为 `admin` / `admin123456`，仅供本地开发使用。
+打开 <http://localhost:8080>，默认账号为 `admin` / `admin123456`。生产部署前请创建 `.env` 并修改默认密钥和密码。
+
+### Docker Compose
+
+如果希望使用容器运行，建议从不需要额外数据库的 SQLite 版本开始：
+
+```bash
+git clone https://gitea.s1f.ren/shiran/productServer.git
+cd productServer
+docker compose -f deploy/docker/compose.sqlite.yml up -d --build
+```
+
+项目同时提供内置 PostgreSQL 和外置数据库版本，具体方式见 [Docker Compose 部署文档](document.md#docker-compose-部署)。
+
+### 从源码运行
+
+需要 Go 1.22+、Node.js 20+ 和 npm。
+
+```bash
+git clone https://gitea.s1f.ren/shiran/productServer.git
+cd productServer
+cp .env.example .env
+
+cd frontend
+npm ci
+npm run build
+cd ..
+
+go build -o productserver .
+```
+
+Windows 开发环境可以直接运行：
 
 ```bat
 start.bat
 ```
 
-浏览器访问 <http://localhost:5173>。生产环境务必设置安全的 `JWT_SECRET` 和 `ADMIN_PASSWORD`。完整配置见 `.env.example`；程序启动时会自动加载当前工作目录中的 `.env` 文件，已存在的系统环境变量优先于文件配置。
+> 完整的二进制安装、数据库配置、环境变量、systemd、API 和 Action 说明请查看 [使用文档](document.md)。
 
-## 项目 Token
+## 工作方式
 
-创建项目时服务会自动生成唯一 Token，明文只显示一次。Token 可用于上传和下载；在项目页面轮换后，旧 Token 会立即失效。服务端只保存 Token 的 SHA-256 哈希。
+```text
+GitHub / Gitea / CI
+          │
+          │ Product Token 上传
+          ▼
+   Product Server
+   ├─ 发布版本与文件
+   ├─ 持久化触发事件
+   ├─ 可视化工作流
+   └─ 实时日志与运行历史
+          │
+          │ Worker 领取任务
+          ▼
+  SSH / SFTP / Webhook / 多服务器
+```
 
-## 用户、成员与项目类型
+Server 提供 API、管理界面、触发器和调度器；Worker 负责执行工作流。两者通过数据库协作，可以独立部署和水平扩展。SQLite 适合单机体验，多实例生产环境推荐 MySQL 或 PostgreSQL。
 
-登录页支持开放注册，系统管理员可在“用户管理”中关闭注册、禁用账号、重置密码和管理系统管理员。项目成员分为所有者、管理员、开发者和只读四种角色；成员通过已注册用户名添加。
+## 使用 Action 自动上传
 
-项目创建时选择类型：产物项目接收 CI 上传并生成项目 Token；定时项目不接收产物，每个工作流可配置独立的五段 Cron、IANA 时区及是否允许并行。非并行计划在前一次运行仍活跃时会记录一次跳过事件，不会堆积任务。
-
-## GitHub Action 自动上传
-
-Action 会把匹配的内容确定性打包为一个 ZIP。版本默认使用 Git tag，没有 tag 时使用完整 commit SHA，也可通过 `version` 覆盖。
+独立的 [Product Server Action](https://gitea.s1f.ren/shiran/product-server-action) 会将匹配内容确定性打包为 ZIP，自动读取 Tag、Commit SHA 和分支信息，然后上传到目标项目。
 
 ```yaml
-- uses: https://gitea.s1f.ren/shiran/product-server-action@v1.2
+- name: Upload artifact
+  uses: https://gitea.s1f.ren/shiran/product-server-action@v1.2
   with:
     url: ${{ secrets.ARTIFACT_SERVER_URL }}
     token: ${{ secrets.ARTIFACT_SERVER_TOKEN }}
@@ -69,108 +142,59 @@ Action 会把匹配的内容确定性打包为一个 ZIP。版本默认使用 Gi
     name: web-build
 ```
 
-Action 输出 `version`、`file`、`sha256` 和不包含 Token 的 `download-url`。Action 源码位于独立仓库 [shiran/product-server-action](https://gitea.s1f.ren/shiran/product-server-action)。
+Action 输出实际版本、分支、文件名、SHA-256 和不包含 Token 的下载地址。重复上传相同版本和内容时按幂等请求处理。
 
-## 通用 CI 上传
+## 直接上传与下载
 
-在项目页面创建 Token 后，通过 multipart 上传一个版本的多个文件：
+任何 CI 都可以通过 multipart 上传：
 
 ```bash
-curl -X POST http://localhost:8080/api/upload \
+curl -X POST https://product.example.com/api/upload \
   -H "Authorization: Bearer ps_your_project_token" \
   -F "version=v1.2.3" \
   -F "commit_sha=$CI_COMMIT_SHA" \
   -F "branch=$CI_COMMIT_BRANCH" \
-  -F "pipeline_id=$CI_PIPELINE_ID" \
-  -F "job_url=$CI_JOB_URL" \
-  -F "files=@dist/app.zip" \
-  -F "files=@dist/checksums.txt"
+  -F "files=@dist/app.zip"
 ```
 
-版本号在项目内唯一。任一文件失败时整个上传批次都会回滚；相同版本、文件名、大小和 SHA-256 的重试视为幂等成功，内容不同则返回 `409 Conflict`。
-
-## Token 直链下载
-
-可以精确指定版本和文件名：
-
-```text
-GET /api/download?token=PROJECT_TOKEN&version=v1.2.3&file=web-build.zip
-```
-
-也可以使用保留关键字 `latest`，自动选择该项目最新创建的发布版本：
-
-```text
-GET /api/download?token=PROJECT_TOKEN&version=latest&file=web-build.zip
-```
-
-`latest` 按发布时间排序，并在时间相同时选择 ID 最大的发布。上传接口不允许将 `latest` 用作真实版本名。
-
-`version` 和 `file` 均可省略。省略 `version` 时默认为 `latest`；省略 `file` 时，自动选择该发布中唯一的原始 ZIP 压缩包：
-
-```text
-GET /api/download?token=PROJECT_TOKEN
-```
-
-如果目标发布中没有原始 ZIP，或者包含多个原始 ZIP，必须显式传入 `file`。
-
-例如：
+通过项目 Token 下载最新版本的唯一原始压缩包：
 
 ```bash
-curl --get 'https://artifacts.example.com/api/download' \
-  --data-urlencode 'token=ps_your_project_token' \
-  --data-urlencode 'version=v1.2.3' \
-  --data-urlencode 'file=web-build.zip' \
-  --output web-build.zip
+curl -fL "https://product.example.com/api/download?token=ps_your_project_token" -o artifact.zip
 ```
 
-生产环境必须使用 HTTPS。查询参数中的 Token 可能进入浏览器历史、反向代理或访问日志；若环境不适合通过 URL 携带密钥，应继续使用管理界面的 JWT 下载接口。
+也可以显式指定 `version` 和 `file`。生产环境必须使用 HTTPS，且应注意查询参数中的 Token 可能进入浏览器历史或代理日志。
 
-## 数据库
+## 技术栈
 
-- SQLite：`DB_DRIVER=sqlite`，`DB_DSN=productserver.db`。SQLite 驱动为纯 Go 实现，构建和运行均不依赖 CGO。
-- MySQL：`DB_DRIVER=mysql`，DSN 示例 `user:pass@tcp(localhost:3306)/productserver?charset=utf8mb4&parseTime=True&loc=Local`
-- PostgreSQL：`DB_DRIVER=postgres`，DSN 示例 `host=localhost user=postgres password=pass dbname=productserver port=5432 sslmode=disable TimeZone=Asia/Shanghai`
+- 后端：Go、Gin、GORM
+- 前端：Vue 3、TypeScript、Vite、Vue Flow
+- 数据库：SQLite（纯 Go）、MySQL、PostgreSQL
+- 工作流：持久化 DAG、租约、心跳、执行槽、SSE 实时日志
+- 安全：bcrypt、JWT、AES-256-GCM 敏感字段加密
 
-应用启动时自动执行迁移，并且只在用户表为空时创建环境变量指定的初始管理员。
-
-## 部署工作流
-
-项目可配置由产物上传自动触发的 DAG 工作流，支持任意版本、Tag、Commit 和 Tag glob。首版模块包括归档、安全解压、SFTP 上传、SSH 命令、受控 Webhook 和摘要校验。
-
-Worker 会将发布文件隔离到工作区的两个目录：`input/archive/` 保存 Action 上传的原始压缩包，`input/files/` 保存自动解压后的文件树。文件模块可使用 `^archive/` 或 `^files/` 正则直接选择对应内容；旧工作流中不带目录前缀的正则仍兼容。
-
-生产环境分别运行服务和 Worker：
+## 构建与测试
 
 ```bash
-./productserver server
-./productserver worker
+cd frontend && npm ci && npm test && npm run build && cd ..
+go test ./...
+go build -trimpath -o productserver .
 ```
 
-敏感字段使用 `SECRET_ENCRYPTION_KEY`（32 字节）进行 AES-GCM 加密。`WORKER_GLOBAL_CONCURRENCY` 控制并行模块数量，日志和临时目录分别由 `WORKFLOW_LOG_DIR`、`WORKFLOW_WORK_DIR` 配置。`WEBHOOK_ALLOWLIST` 是逗号分隔的域名或 CIDR；为空时拒绝所有 Webhook。
+也可以使用 `build.ps1` 或 `build.sh`。前端产物会嵌入最终二进制，运行时不需要前端源码目录。健康检查为 `/healthz`，就绪检查为 `/readyz`。
 
-当前 SSH 主机密钥校验按首版约定处于关闭状态，存在中间人攻击风险，仅应在可信网络中使用。
+## 文档与参与
 
-## 测试与生产构建
+- [完整使用文档](document.md)
+- [环境变量示例](.env.example)
+- [Product Server Action](https://gitea.s1f.ren/shiran/product-server-action)
+- [GitHub 镜像与 Releases](https://github.com/zouXH-god/productServer)
 
-Windows：
+欢迎提交 Issue、功能建议和 Pull Request。如果这个项目对你有帮助，也欢迎点一个 Star，让更多需要轻量 CI 产物管理和自动部署的人看到它。
 
-```powershell
-.\build.ps1
-```
+## 安全说明
 
-Linux/macOS：
-
-```sh
-./build.sh
-```
-
-构建产物位于 `bin/`，运行时不需要单独部署前端目录。健康检查为 `/healthz`，就绪检查为 `/readyz`。
-
-Tag 构建 CI 会在 `CGO_ENABLED=0` 下生成 Linux、Windows、macOS 的 amd64/arm64 六种二进制文件，并附带统一的 `SHA256SUMS` 校验文件；所有平台产物会作为同一个发布包上传到 Product Server。
-
-每次向 Gitea 分支或 `v*` Tag 推送后，`github-mirror.yaml` 会将源码同步到 GitHub，并在镜像提交中移除 `.gitea/workflows`。镜像提交会把 README 内的 Action `uses:` 地址固定规范化为 `zouXH-god/product-server-action@版本`。需要在 Gitea 仓库中配置变量 `MIRROR_REPOSITORY=owner/repository`，以及 Secret `MIRROR_FINE_GRAINED_TOKEN`。Fine-grained PAT 必须针对目标 GitHub 仓库同时授予 `Contents: Read and write` 与 `Workflows: Read and write`，否则 GitHub 会拒绝包含 `.github/workflows` 的推送。同步会强制更新同名 GitHub 分支或 Tag，因此目标仓库应仅作为镜像使用。
-
-GitHub 收到 `v*` Tag 后，仅在 GitHub 运行 `.github/workflows/release.yaml`：执行前后端测试，构建 Linux、Windows、macOS 的 amd64/arm64 发布压缩包，生成 `SHA256SUMS`，并使用 GitHub 内置 `GITHUB_TOKEN` 创建 Release 和上传附件。
+当前 SSH 主机密钥校验按首版约定处于关闭状态，存在中间人攻击风险，仅应在可信网络中使用。敏感字段需要通过 `SECRET_ENCRYPTION_KEY` 加密；生产环境请使用 HTTPS、强随机密钥和独立数据库账号。
 
 ## 开源许可
 

@@ -1,0 +1,69 @@
+name: productserver-postgres
+
+x-productserver-environment: &productserver-environment
+  HTTP_ADDR: ":8080"
+  DB_DRIVER: postgres
+  DB_DSN: "host=postgres user=${POSTGRES_USER:-productserver} password=${POSTGRES_PASSWORD:-productserver} dbname=${POSTGRES_DB:-productserver} port=5432 sslmode=disable TimeZone=${DB_TIMEZONE:-Asia/Shanghai}"
+  STORAGE_DIR: /app/data/artifacts
+  WORKFLOW_LOG_DIR: /app/data/logs
+  WORKFLOW_WORK_DIR: /app/data/work
+  JWT_SECRET: "${JWT_SECRET:-dev-only-change-this-jwt-secret}"
+  JWT_EXPIRY: "${JWT_EXPIRY:-24h}"
+  ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+  ADMIN_PASSWORD: "${ADMIN_PASSWORD:-admin123456}"
+  SECRET_ENCRYPTION_KEY: "${SECRET_ENCRYPTION_KEY:-0123456789abcdef0123456789abcdef}"
+  MAX_FILE_BYTES: "${MAX_FILE_BYTES:-1073741824}"
+  MAX_BATCH_BYTES: "${MAX_BATCH_BYTES:-2147483648}"
+  WORKER_GLOBAL_CONCURRENCY: "${WORKER_GLOBAL_CONCURRENCY:-4}"
+  WORKER_LEASE_DURATION: "${WORKER_LEASE_DURATION:-30s}"
+  WORKER_HEARTBEAT_INTERVAL: "${WORKER_HEARTBEAT_INTERVAL:-10s}"
+  FAILED_WORKSPACE_RETENTION: "${FAILED_WORKSPACE_RETENTION:-72h}"
+  WEBHOOK_ALLOWLIST: "${WEBHOOK_ALLOWLIST:-}"
+
+x-productserver-service: &productserver-service
+  build:
+    context: ../..
+    dockerfile: deploy/docker/Dockerfile
+  image: productserver:local
+  restart: unless-stopped
+  environment: *productserver-environment
+  volumes:
+    - productserver-data:/app/data
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-productserver}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-productserver}"
+      POSTGRES_DB: "${POSTGRES_DB:-productserver}"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-productserver} -d ${POSTGRES_DB:-productserver}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  server:
+    <<: *productserver-service
+    command: ["server"]
+    ports:
+      - "${PRODUCTSERVER_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    <<: *productserver-service
+    command: ["worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+
+volumes:
+  productserver-data:
+  postgres-data:

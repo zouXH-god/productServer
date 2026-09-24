@@ -68,10 +68,61 @@ jobs:
           done
           (cd dist && sha256sum productserver-* > SHA256SUMS)
 
+      - name: Generate release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_tag="${GITHUB_REF_NAME}"
+          previous_tag="$(git tag --merged HEAD --sort=-version:refname | grep -Fxv "$current_tag" | head -n 1 || true)"
+
+          {
+            echo "# Product Server ${current_tag}"
+            echo
+            echo "A self-hosted CI artifact management and visual deployment platform."
+            echo
+            echo "## What's updated / 本版本更新"
+            echo
+            if [ -n "$previous_tag" ]; then
+              git log --no-merges --pretty=format:'- %s (`%h`)' "${previous_tag}..HEAD"
+              echo
+              echo
+              echo "**Full changelog:** [${previous_tag}...${current_tag}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${previous_tag}...${current_tag})"
+            else
+              git log --no-merges --pretty=format:'- %s (`%h`)' HEAD
+              echo
+            fi
+            echo
+            echo "## Installation / 安装"
+            echo
+            echo "Download the archive for your operating system and architecture, extract it, then run the Server and Worker separately:"
+            echo
+            echo '```bash'
+            echo './productserver server'
+            echo './productserver worker'
+            echo '```'
+            echo
+            echo "Windows executables use the same subcommands. The Vue frontend is embedded in every binary."
+            echo
+            echo "See [README](https://github.com/${GITHUB_REPOSITORY}#三分钟快速开始) and [the usage guide](https://github.com/${GITHUB_REPOSITORY}/blob/${current_tag}/document.md) for configuration and deployment details."
+            echo
+            echo "## Release assets / 发布附件"
+            echo
+            echo "| Platform | amd64 | arm64 |"
+            echo "| --- | --- | --- |"
+            echo "| Linux | \`productserver-linux-amd64.tar.gz\` | \`productserver-linux-arm64.tar.gz\` |"
+            echo "| Windows | \`productserver-windows-amd64.zip\` | \`productserver-windows-arm64.zip\` |"
+            echo "| macOS | \`productserver-darwin-amd64.tar.gz\` | \`productserver-darwin-arm64.tar.gz\` |"
+            echo
+            echo "Verify downloaded files with \`SHA256SUMS\` before installation."
+          } > dist/RELEASE_NOTES.md
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: Product Server ${{ github.ref_name }}
+          body_path: dist/RELEASE_NOTES.md
           generate_release_notes: true
+          append_body: false
           files: |
             dist/productserver-*.tar.gz
             dist/productserver-*.zip

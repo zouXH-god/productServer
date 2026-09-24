@@ -1,0 +1,14 @@
+.git
+.gitea
+.github
+.env
+bin
+data
+*.db
+*.db-shm
+*.db-wal
+frontend/node_modules
+frontend/.npm-cache
+uploader
+images
+deploy/docker/*.md

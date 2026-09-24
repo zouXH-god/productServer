@@ -1,0 +1,32 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+    authors:
+      - "dependabot[bot]"
+  categories:
+    - title: "Breaking changes / 破坏性变更"
+      labels:
+        - breaking-change
+        - semver-major
+    - title: "Features / 新功能"
+      labels:
+        - feature
+        - enhancement
+        - semver-minor
+    - title: "Fixes / 问题修复"
+      labels:
+        - bug
+        - fix
+        - semver-patch
+    - title: "Documentation / 文档"
+      labels:
+        - documentation
+    - title: "Maintenance / 维护"
+      labels:
+        - dependencies
+        - maintenance
+        - ci
+    - title: "Other changes / 其他更新"
+      labels:
+        - "*"

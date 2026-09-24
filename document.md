@@ -4,12 +4,38 @@
 
 ## 安装方法
 
-### 使用发布版二进制
+### 使用 Release 二进制（推荐）
 
-1. 从 Release 下载与系统架构对应的 `productserver`（Windows 为 `productserver.exe`）。
-2. 创建运行目录并放入二进制文件。
-3. 将 `.env.example` 复制为 `.env`，至少修改 `JWT_SECRET`、`ADMIN_PASSWORD` 和 `SECRET_ENCRYPTION_KEY`。
-4. 分别启动 HTTP 服务和 Worker：
+Release 中已经包含嵌入前端页面的完整可执行文件，不需要安装 Go、Node.js 或 npm。进入 [GitHub Releases](https://github.com/zouXH-god/productServer/releases/latest)，根据系统和 CPU 架构下载：
+
+- Linux：`productserver-linux-amd64.tar.gz` 或 `productserver-linux-arm64.tar.gz`
+- Windows：`productserver-windows-amd64.zip` 或 `productserver-windows-arm64.zip`
+- macOS：`productserver-darwin-amd64.tar.gz` 或 `productserver-darwin-arm64.tar.gz`
+
+Linux amd64 示例：
+
+```bash
+mkdir -p productserver && cd productserver
+curl -LO https://github.com/zouXH-god/productServer/releases/latest/download/productserver-linux-amd64.tar.gz
+tar -xzf productserver-linux-amd64.tar.gz
+mv productserver-linux-amd64 productserver
+chmod +x productserver
+```
+
+创建 `.env`，至少设置以下内容：
+
+```dotenv
+HTTP_ADDR=:8080
+DB_DRIVER=sqlite
+DB_DSN=data/productserver.db
+STORAGE_DIR=data/artifacts
+JWT_SECRET=replace-with-a-long-random-secret
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=replace-with-a-strong-password
+SECRET_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef
+```
+
+分别启动 HTTP 服务和 Worker：
 
 ```bash
 ./productserver server
@@ -17,6 +43,77 @@
 ```
 
 不传子命令时默认启动 `server`。生产环境必须同时运行至少一个 Server 和一个 Worker；Server 负责 API、前端、调度与事件分发，Worker 负责领取并执行工作流任务。多个实例可共用同一 MySQL 或 PostgreSQL 数据库，生产环境不建议多机共享 SQLite。
+
+### Docker Compose 部署
+
+如果希望使用容器运行，仓库提供三套 Compose 配置，均会启动一个 Server 和一个 Worker。Compose 部署建议先使用 SQLite 版本。
+
+#### SQLite 快速版
+
+不需要额外数据库，应用数据、产物、日志和工作目录保存在 Docker 命名卷中：
+
+```bash
+docker compose -f deploy/docker/compose.sqlite.yml up -d --build
+```
+
+打开 <http://localhost:8080>，默认账号为 `admin` / `admin123456`。SQLite 已启用 WAL 和 busy timeout，适合单机及轻量使用。
+
+#### 内置 PostgreSQL 版
+
+该版本同时启动 PostgreSQL 16，适合希望直接体验 PostgreSQL 或准备运行多个 Worker 的环境：
+
+```bash
+docker compose -f deploy/docker/compose.postgres.yml up -d --build
+```
+
+可以在项目根目录创建 `.env` 覆盖默认值：
+
+```dotenv
+PRODUCTSERVER_PORT=8080
+POSTGRES_USER=productserver
+POSTGRES_PASSWORD=replace-with-a-strong-password
+POSTGRES_DB=productserver
+JWT_SECRET=replace-with-a-long-random-secret
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=replace-with-a-strong-password
+SECRET_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef
+```
+
+#### 外置数据库版
+
+外置版不会创建数据库容器，支持 MySQL、PostgreSQL 或兼容服务。以下变量必须提前配置：
+
+```dotenv
+DB_DRIVER=postgres
+DB_DSN=host=database.example.com user=productserver password=strong-password dbname=productserver port=5432 sslmode=require TimeZone=Asia/Shanghai
+JWT_SECRET=replace-with-a-long-random-secret
+ADMIN_PASSWORD=replace-with-a-strong-password
+SECRET_ENCRYPTION_KEY=0123456789abcdef0123456789abcdef
+```
+
+启动服务：
+
+```bash
+docker compose -f deploy/docker/compose.external.yml up -d --build
+```
+
+数据库地址必须能从容器内部访问。数据库运行在宿主机时，Docker Desktop 通常可以使用 `host.docker.internal`，Linux 环境应使用宿主机可达地址或自行配置网络。
+
+三种版本都支持以下常用命令：
+
+```bash
+# 查看状态和日志
+docker compose -f deploy/docker/compose.sqlite.yml ps
+docker compose -f deploy/docker/compose.sqlite.yml logs -f server worker
+
+# 停止服务但保留数据
+docker compose -f deploy/docker/compose.sqlite.yml down
+
+# 停止并删除命名卷中的全部数据（不可恢复）
+docker compose -f deploy/docker/compose.sqlite.yml down -v
+```
+
+生产环境务必通过 `.env` 设置强随机 `JWT_SECRET`、管理员密码和恰好 32 字节的 `SECRET_ENCRYPTION_KEY`，并在反向代理层启用 HTTPS。命名卷 `productserver-data` 包含产物、日志和任务工作目录，需要纳入备份。
 
 ### 从源码构建
 

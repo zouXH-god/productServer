@@ -42,9 +42,10 @@ jobs:
         run: |
           set -eu
           git rm -r --ignore-unmatch .gitea/workflows
-          sed -E -i "s#^([[:space:]]*- uses: )https://gitea\.s1f\.ren/shiran/product-server-action(@[^[:space:]]+)#\1zouXH-god/product-server-action\2#" README.md
-          sed -i "s#https://gitea.s1f.ren/shiran/product-server-action#https://github.com/zouXH-god/product-server-action#g" README.md
-          git add README.md
+          sed -E -i "s#^([[:space:]]*- uses: )https://gitea\.s1f\.ren/shiran/product-server-action(@[^[:space:]]+)#\1zouXH-god/product-server-action\2#" README.md README_EN.md
+          sed -i "s#https://gitea.s1f.ren/shiran/product-server-action#https://github.com/zouXH-god/product-server-action#g" README.md README_EN.md
+          sed -i "s#https://gitea.s1f.ren/shiran/productServer.git#https://github.com/zouXH-god/productServer.git#g" README.md README_EN.md
+          git add README.md README_EN.md
           git config user.name "productserver-mirror"
           git config user.email "productserver-mirror@users.noreply.github.com"
           git commit -m "chore: prepare GitHub mirror"
