@@ -303,3 +303,38 @@ func TestEnvironmentSnapshotProjectOverrideAndEncryption(t *testing.T) {
 		t.Fatalf("snapshot=%#v", snapshot)
 	}
 }
+
+func TestAvailableEnvironmentVariablesRedactsSecretsAndUsesProjectOwner(t *testing.T) {
+	a, _ := testApp(t)
+	var owner User
+	a.db.First(&owner)
+	project := Project{Name: "available-env-project", UserID: owner.ID}
+	if err := a.db.Create(&project).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := a.db.Create(&ProjectMember{ProjectID: project.ID, UserID: owner.ID, Role: "owner"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	values := []EnvironmentVariable{
+		{UserID: owner.ID, Name: "REGION", Value: "global"},
+		{UserID: owner.ID, ProjectID: project.ID, Name: "REGION", Value: "project"},
+		{UserID: owner.ID, Name: "DEPLOY_TOKEN", Sensitive: true, ValueEncrypted: "encrypted-secret-must-not-leak"},
+	}
+	if err := a.db.Create(&values).Error; err != nil {
+		t.Fatal(err)
+	}
+	token := loginToken(t, a)
+	w := request(t, a, "GET", "/api/projects/"+itoa(project.ID)+"/environment-variables/available", nil, map[string]string{"Authorization": "Bearer " + token})
+	if w.Code != 200 {
+		t.Fatalf("available environment variables: %d %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	for _, expected := range []string{`"name":"REGION"`, `"value":"global"`, `"value":"project"`, `"scope":"global"`, `"scope":"project"`, `"overridden":true`, `"name":"DEPLOY_TOKEN"`, `"sensitive":true`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("response missing %s: %s", expected, body)
+		}
+	}
+	if strings.Contains(body, "encrypted-secret-must-not-leak") {
+		t.Fatalf("encrypted secret leaked: %s", body)
+	}
+}

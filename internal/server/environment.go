@@ -51,6 +51,49 @@ func (a *App) listProjectEnvironmentVariables(c *gin.Context) {
 	}
 	a.listEnvironment(c, project.UserID, id)
 }
+
+func (a *App) listAvailableEnvironmentVariables(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	project, _, ok := a.projectAccess(c, id, projectView)
+	if !ok {
+		return
+	}
+	var values []EnvironmentVariable
+	if err := a.db.Where("user_id=? AND project_id IN ?", project.UserID, []uint{0, id}).Order("name, project_id").Find(&values).Error; err != nil {
+		fail(c, 500, "environment_variables_unavailable", "unable to load environment variables")
+		return
+	}
+	projectNames := map[string]bool{}
+	for _, value := range values {
+		if value.ProjectID == id {
+			projectNames[value.Name] = true
+		}
+	}
+	type availableVariable struct {
+		ID         uint   `json:"id"`
+		Name       string `json:"name"`
+		Value      string `json:"value,omitempty"`
+		Sensitive  bool   `json:"sensitive"`
+		Scope      string `json:"scope"`
+		Overridden bool   `json:"overridden"`
+	}
+	result := make([]availableVariable, 0, len(values))
+	for _, value := range values {
+		scope := "global"
+		if value.ProjectID == id {
+			scope = "project"
+		}
+		plain := value.Value
+		if value.Sensitive {
+			plain = ""
+		}
+		result = append(result, availableVariable{ID: value.ID, Name: value.Name, Value: plain, Sensitive: value.Sensitive, Scope: scope, Overridden: scope == "global" && projectNames[value.Name]})
+	}
+	c.JSON(200, result)
+}
 func (a *App) saveEnvironment(c *gin.Context, ownerID, projectID uint, idParam string) {
 	var in environmentPayload
 	if c.ShouldBindJSON(&in) != nil || !environmentName.MatchString(in.Name) {

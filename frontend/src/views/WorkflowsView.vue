@@ -31,6 +31,11 @@ import {
   ServerCog,
   FolderKanban,
   History as HistoryIcon,
+  KeyRound,
+  Variable,
+  Search,
+  GripVertical,
+  ChevronDown,
 } from "lucide-vue-next";
 import { api } from "../api";
 import Modal from "../components/Modal.vue";
@@ -39,10 +44,12 @@ import EmptyState from "../components/EmptyState.vue";
 import FileTree from "../components/FileTree.vue";
 import AIChatPanel from "../components/AIChatPanel.vue";
 import RunDetailDrawer from "../components/RunDetailDrawer.vue";
+import { toast } from "../toast";
 const route = useRoute(),
   pid = Number(route.params.id),
   releases = ref<any[]>([]),
   connections = ref<any[]>([]),
+  environmentVariables = ref<any[]>([]),
   editing = ref<number>(),
   name = ref(""),
   enabled = ref(true),
@@ -69,6 +76,8 @@ const route = useRoute(),
   future = ref<string[]>([]),
   error = ref("");
 const project=ref<any>();
+const environmentSearch=ref(""),environmentPanelOpen=ref(true);
+const environmentPanelPosition=ref({x:0,y:82});
 const triggerDraft=ref({type:"any",glob:"v*"});
 const workflowHistory=ref<any[]>([]),historyPreview=ref<any>(),baseRevisionID=ref(0);
 const savedSignature=ref("");
@@ -144,6 +153,35 @@ for(const key of ["archive","extract","sftp_upload","sftp_extract","checksum_ver
 const moduleGroups=computed(()=>["文件操作","流程控制","判断","数据派生","信息交互"].map(category=>({category,items:Object.entries(modules).filter(([,m]:any)=>m.category===category)})));
 const persistedSignature=computed(()=>JSON.stringify({name:name.value,enabled:enabled.value,trigger_type:triggerType.value,trigger_glob:triggerGlob.value,nodes:nodes.value.map((n:any)=>({id:n.id,name:n.data.name||"",type:n.data.module,config:n.data.config,timeout_seconds:n.data.timeout_seconds,retries:n.data.retries,position:n.position})),edges:edges.value.map((e:any)=>({from:e.source,to:e.target,condition:e.condition||"success"}))}));
 const triggerLabel=computed(()=>({any:"任意版本",tag:"仅 Tag",commit:"所有分支 Commit",tag_glob:`Tag ${triggerGlob.value}`,branch_glob:`分支 ${triggerGlob.value}`} as any)[triggerType.value]||triggerType.value);
+const previewRelease=computed(()=>releases.value.find((item:any)=>item.id===previewReleaseID.value));
+const showLoopVariables=computed(()=>!!selected.value&&(['foreach','loop_end'].includes(selected.value.data.module)||!!scopeFor(selected.value.id,'foreach')));
+const showServerVariables=computed(()=>!!selected.value&&(['server_list','server_list_end'].includes(selected.value.data.module)||!!scopeFor(selected.value.id,'server_list')));
+const builtInVariables=computed(()=>{
+  const release=previewRelease.value,runtime="<运行时注入>";
+  const result:any[]=[
+    {name:"project.id",value:project.value?.id??runtime,group:"项目"},
+    {name:"project.name",value:project.value?.name||runtime,group:"项目"},
+    {name:"release.id",value:release?.id??runtime,group:"发布"},
+    {name:"release.version",value:release?.version||runtime,group:"发布"},
+    {name:"release.ref_type",value:release?.ref_type||runtime,group:"发布"},
+    {name:"release.commit_sha",value:release?.commit_sha||runtime,group:"发布"},
+    {name:"release.branch",value:release?.branch||runtime,group:"发布"},
+    {name:"trigger.type",value:runtime,group:"触发"},
+    {name:"trigger.scheduled_at",value:runtime,group:"触发"},
+    {name:"workspace.input",value:runtime,group:"工作区"},
+    {name:"workspace.work",value:runtime,group:"工作区"},
+  ];
+  if(showLoopVariables.value)result.push({name:"loop.item",value:"<循环范围内注入>",group:"循环上下文"},{name:"loop.index",value:"<循环范围内注入>",group:"循环上下文"});
+  if(showServerVariables.value)result.push(...['id','index','name','host','port','username','auth_type'].map(name=>({name:`server.${name}`,value:"<服务器范围内注入>",group:"服务器上下文"})));
+  return result;
+});
+function templateVariable(name:string){return "{{"+name+"}}"}
+async function copyTemplateVariable(name:string){const value=templateVariable(name);try{await navigator.clipboard.writeText(value)}catch{const input=document.createElement('textarea');input.value=value;input.style.position='fixed';input.style.opacity='0';document.body.appendChild(input);input.select();document.execCommand('copy');input.remove()}toast(`已复制 ${value}`)}
+const filteredBuiltInVariables=computed(()=>{const q=environmentSearch.value.trim().toLowerCase();return q?builtInVariables.value.filter((item:any)=>`${item.name} ${item.value} ${item.group}`.toLowerCase().includes(q)):builtInVariables.value});
+const filteredEnvironmentVariables=computed(()=>{const q=environmentSearch.value.trim().toLowerCase();return q?environmentVariables.value.filter((item:any)=>`${item.name} ${item.sensitive?'':item.value} ${item.scope==='project'?'项目':'全局'}`.toLowerCase().includes(q)):environmentVariables.value});
+const environmentPanelStyle=computed(()=>({left:`${environmentPanelPosition.value.x}px`,top:`${environmentPanelPosition.value.y}px`}));
+function clampEnvironmentPanel(x:number,y:number){return{x:Math.max(8,Math.min(x,window.innerWidth-348)),y:Math.max(8,Math.min(y,window.innerHeight-58))}}
+function startEnvironmentPanelDrag(event:PointerEvent){if((event.target as HTMLElement).closest('button,input'))return;event.preventDefault();const pointerX=event.clientX,pointerY=event.clientY,originX=environmentPanelPosition.value.x,originY=environmentPanelPosition.value.y;const move=(e:PointerEvent)=>{environmentPanelPosition.value=clampEnvironmentPanel(originX+e.clientX-pointerX,originY+e.clientY-pointerY)};const stop=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',stop);localStorage.setItem('workflow-environment-panel',JSON.stringify(environmentPanelPosition.value))};window.addEventListener('pointermove',move);window.addEventListener('pointerup',stop)}
 function openTriggerEditor(){triggerDraft.value={type:triggerType.value,glob:triggerGlob.value||(triggerType.value==="branch_glob"?"main":"v*")};triggerOpen.value=true}
 function applyTrigger(){triggerType.value=triggerDraft.value.type;triggerGlob.value=triggerDraft.value.glob.trim();saved.value=false;triggerOpen.value=false}
 function normalizeNodeConfig(type:string, source:any) {
@@ -154,7 +192,22 @@ function normalizeNodeConfig(type:string, source:any) {
   return {...(modules[type]?.defaults||{}),...c};
 }
 async function load() {
-  project.value=await api(`/api/projects/${pid}`);connections.value=await api(`/api/ssh-connections?project_id=${pid}`);releases.value=project.value.type==='artifact'?await api(`/api/projects/${pid}/releases`):[];
+  project.value=await api(`/api/projects/${pid}`);
+  connections.value=await api(`/api/ssh-connections?project_id=${pid}`);
+  environmentVariables.value=await api(`/api/projects/${pid}/environment-variables/available`);
+  releases.value=project.value.type==='artifact'?await api(`/api/projects/${pid}/releases`):[];
+  if (project.value.type === 'artifact') {
+    const selectedReleaseStillExists = releases.value.some(
+      (release: any) => release.id === previewReleaseID.value,
+    );
+    if (!selectedReleaseStillExists) {
+      previewReleaseID.value = releases.value[0]?.id || 0;
+    }
+    await loadPreview();
+  } else {
+    previewReleaseID.value = 0;
+    previewFiles.value = [];
+  }
 }
 async function loadPreview() {
   if (!previewReleaseID.value) {
@@ -227,13 +280,14 @@ function add(type: string) {
     const endType=type==="foreach"?"loop_end":"server_list_end";
     const endID=`${endType}_${Date.now()+1}`;nodes.value[nodes.value.length-1].data.config.end_node_id=endID;
     nodes.value.push({id:endID,label:modules[endType].name,position:{x:330+(nodes.value.length%3)*30,y:180+nodes.value.length*20},data:{name:"",module:endType,config:{start_node_id:id},timeout_seconds:600,retries:0}});
-    edges.value.push({id:`e_${Date.now()}`,source:id,target:endID,condition:"success"});
+    edges.value.push({id:`e_${Date.now()}`,source:id,target:endID,sourceHandle:"output",targetHandle:"input",condition:"success"});
   }
 }
 function connect(e: any) {
   checkpoint();
   const condition=["true","false"].includes(e.sourceHandle)?e.sourceHandle:"success";addEdges([{ ...e, condition, label:condition==="success"?"":condition, id: `e_${Date.now()}` }]);
 }
+function sourceHandleForCondition(condition:string){return ["true","false"].includes(condition)?condition:"output"}
 function choose(e: any) {
   selectedEdge.value = undefined;
   edges.value = edges.value.map((edge) => ({ ...edge, selected: false }));
@@ -258,7 +312,7 @@ function clearSelection() {
 function restore(raw: string) {
   const x = JSON.parse(raw);
   nodes.value = x.nodes;
-  edges.value = x.edges;
+  edges.value = x.edges.map((edge:any)=>({...edge,sourceHandle:edge.sourceHandle||sourceHandleForCondition(edge.condition||"success"),targetHandle:edge.targetHandle||"input"}));
   selected.value = undefined;
   nodeEditorOpen.value=false;
 }
@@ -321,7 +375,7 @@ function startEditor() {
 }
 function applyDefinition(definition:any,prefix="e"){
   nodes.value=(definition.nodes||[]).map((n:any)=>({id:n.id,label:n.name||modules[n.type]?.name||n.type,position:n.position||{x:100,y:100},data:{name:n.name||"",module:n.type,config:normalizeNodeConfig(n.type,n.config),timeout_seconds:n.timeout_seconds||600,retries:n.retries||0}}));
-  edges.value=(definition.edges||[]).map((e:any,i:number)=>({id:`${prefix}${i}_${Date.now()}`,source:e.from,target:e.to,condition:e.condition||"success",label:e.condition&&e.condition!=="success"?e.condition:""}));
+  edges.value=(definition.edges||[]).map((e:any,i:number)=>{const condition=e.condition||"success";return{id:`${prefix}${i}_${Date.now()}`,source:e.from,target:e.to,sourceHandle:sourceHandleForCondition(condition),targetHandle:"input",condition,label:condition!=="success"?condition:""}});
 }
 async function edit(id: number) {
   const w = await api<any>(`/api/projects/${pid}/workflows/${id}`);
@@ -441,6 +495,7 @@ function key(e: KeyboardEvent) {
     runOpen.value = true;
 }
 onMounted(async () => {
+	try{const savedPosition=JSON.parse(localStorage.getItem('workflow-environment-panel')||'null');environmentPanelPosition.value=savedPosition?clampEnvironmentPanel(savedPosition.x,savedPosition.y):clampEnvironmentPanel(window.innerWidth-362,82)}catch{environmentPanelPosition.value=clampEnvironmentPanel(window.innerWidth-362,82)}
 	await load();
 	if (route.query.new === "1" && canDevelop.value) beginCreate();
 	else if (Number(route.query.workflow)) await edit(Number(route.query.workflow));
@@ -452,14 +507,15 @@ onUnmounted(() => {document.removeEventListener("keydown", key, true);window.rem
 const moduleInfo = computed(() =>
   selected.value ? modules[selected.value.data.module] : null,
 );
-function serverScopeFor(nodeID:string){
-  for(const start of nodes.value.filter((n:any)=>n.data.module==="server_list")){
+function scopeFor(nodeID:string,module:string){
+  for(const start of nodes.value.filter((n:any)=>n.data.module===module)){
     const end=start.data.config.end_node_id, seen=new Set<string>(), queue=edges.value.filter((e:any)=>e.source===start.id).map((e:any)=>e.target);
     while(queue.length){const id=queue.shift();if(!id||id===end||seen.has(id))continue;seen.add(id);for(const e of edges.value.filter((x:any)=>x.source===id))queue.push(e.target)}
     if(seen.has(nodeID))return start;
   }
   return undefined;
 }
+function serverScopeFor(nodeID:string){return scopeFor(nodeID,"server_list")}
 const selectedServerScope = computed(()=>selected.value?serverScopeFor(selected.value.id):undefined);
 const canvasDefinition = computed(() => ({
   nodes: nodes.value.map((n) => ({ id:n.id, name:n.data.name||"", type:n.data.module, config:n.data.config, timeout_seconds:n.data.timeout_seconds, retries:n.data.retries, position:n.position })),
@@ -582,6 +638,21 @@ function applyAICanvas(canvas:any){
     </div>
     <AIChatPanel :project-id="pid" :workflow-id="editing||undefined" :workflow-name="name" :trigger-type="triggerType" :trigger-glob="triggerGlob" :canvas="canvasDefinition" @checkpoint="checkpoint" @apply="applyAICanvas" />
   </div>
+  <Teleport to="body">
+    <section class="canvas-env-preview" :class="{collapsed:!environmentPanelOpen}" :style="environmentPanelStyle">
+      <header @pointerdown="startEnvironmentPanelDrag"><GripVertical/><Variable/><b>可用变量</b><small>{{filteredBuiltInVariables.length+filteredEnvironmentVariables.length}}</small><button class="icon-btn" type="button" :title="environmentPanelOpen?'折叠':'展开'" @click="environmentPanelOpen=!environmentPanelOpen"><ChevronDown/></button></header>
+      <template v-if="environmentPanelOpen">
+        <label class="canvas-env-search"><Search/><input v-model="environmentSearch" placeholder="检索名称、值或作用域"/></label>
+        <div class="canvas-env-list">
+          <h4 v-if="filteredBuiltInVariables.length">系统内置</h4>
+          <div v-for="item in filteredBuiltInVariables" :key="item.name" role="button" tabindex="0" title="点击复制变量调用名" @click="copyTemplateVariable(item.name)" @keydown.enter.prevent="copyTemplateVariable(item.name)" @keydown.space.prevent="copyTemplateVariable(item.name)"><Variable/><span><b>{{templateVariable(item.name)}}</b><small>{{item.group}}变量</small></span><code :title="String(item.value)">{{item.value}}</code></div>
+          <h4 v-if="filteredEnvironmentVariables.length">环境变量</h4>
+          <div v-for="item in filteredEnvironmentVariables" :key="`${item.scope}-${item.id}`" :class="{overridden:item.overridden}" role="button" tabindex="0" title="点击复制变量调用名" @click="copyTemplateVariable('env.'+item.name)" @keydown.enter.prevent="copyTemplateVariable('env.'+item.name)" @keydown.space.prevent="copyTemplateVariable('env.'+item.name)"><KeyRound v-if="item.sensitive"/><Variable v-else/><span><b>{{templateVariable('env.'+item.name)}}</b><small>{{item.scope==='project'?'项目':'全局'}}<template v-if="item.overridden"> · 已被项目覆盖</template></small></span><code>{{item.sensitive?'***':item.value}}</code></div>
+          <p v-if="!filteredBuiltInVariables.length&&!filteredEnvironmentVariables.length" class="muted">没有匹配的变量</p>
+        </div>
+      </template>
+    </section>
+  </Teleport>
   <Drawer v-model="historyOpen" wide title="工作流保存历史"><div class="workflow-history-layout"><aside class="workflow-history-list"><button v-for="item in workflowHistory" :key="item.id" :class="{active:historyPreview?.id===item.id}" @click="viewWorkflowRevision(item)"><span><b>{{new Date(item.created_at).toLocaleString()}}</b><small>{{item.created_by||'未知用户'}} · {{item.node_count}} 个节点 · {{item.edge_count}} 条连接</small></span><em>#{{item.id}}</em></button><EmptyState v-if="!workflowHistory.length" title="暂无保存历史"/></aside><section v-if="historyPreview" class="workflow-history-preview"><header><div><h3>{{historyPreview.name}}</h3><p>{{new Date(historyPreview.created_at).toLocaleString()}} · {{historyPreview.created_by||'未知用户'}}</p></div><button v-if="canDevelop" class="btn" @click="applyWorkflowRevision">应用到当前画布</button></header><div class="history-meta"><span>{{historyPreview.enabled?'已启用':'已停用'}}</span><span>{{historyPreview.trigger_type==='branch_glob'?`分支 ${historyPreview.trigger_glob}`:historyPreview.trigger_type==='tag_glob'?`Tag ${historyPreview.trigger_glob}`:historyPreview.trigger_type}}</span></div><div class="workflow-history-canvas"><VueFlow :nodes="historyPreviewNodes" :edges="historyPreviewEdges" fit-view-on-init :nodes-draggable="false" :nodes-connectable="false" :elements-selectable="false"><template #node-default="previewNode"><div class="history-preview-node"><component :is="modules[historyPreview.definition.nodes.find((item:any)=>item.id===previewNode.id)?.type]?.icon"/><span><b>{{previewNode.data.label}}</b><small>{{previewNode.id}}</small></span></div></template></VueFlow></div><details class="code-disclosure"><summary>查看历史 JSON</summary><pre>{{JSON.stringify(historyPreview.definition,null,2)}}</pre></details></section></div></Drawer>
   <Drawer v-model="previewOpen" title="版本文件预览">
     <div class="release-preview-summary">
@@ -853,6 +924,30 @@ function applyAICanvas(canvas:any){
 .history-preview-node > svg { width: 17px; }
 .history-preview-node span { display: grid; gap: 2px; }
 .history-preview-node small { font-size: 8px; }
+.canvas-env-preview { position: fixed; z-index: 130; width: 340px; max-width: calc(100vw - 16px); max-height: min(70vh,620px); overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: #fffffff2; box-shadow: 0 18px 50px #0002; backdrop-filter: blur(12px); }
+.canvas-env-preview.collapsed { width: 245px; }
+.canvas-env-preview > header { height: 44px; padding: 0 7px 0 10px; display: flex; align-items: center; gap: 8px; cursor: move; user-select: none; touch-action: none; font-size: 12px; }
+.canvas-env-preview > header > svg { width: 15px; color: var(--muted); }
+.canvas-env-preview > header > svg:first-child { width: 13px; cursor: grab; }
+.canvas-env-preview > header small { margin-left: auto; padding: 2px 7px; border-radius: 999px; background: var(--surface-2); }
+.canvas-env-preview > header .icon-btn { width: 30px; min-height: 30px; transform: rotate(0); }
+.canvas-env-preview.collapsed > header .icon-btn { transform: rotate(180deg); }
+.canvas-env-search { height: 42px; margin: 0; padding: 6px 10px; display: flex; align-items: center; gap: 7px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: #fff; }
+.canvas-env-search svg { width: 14px; color: var(--muted); }
+.canvas-env-search input { height: 30px; margin: 0; padding: 5px 7px; border: 0; box-shadow: none; background: transparent; font-size: 10px; }
+.canvas-env-list { max-height: calc(min(70vh,620px) - 86px); overflow: auto; padding: 0 10px 10px; }
+.canvas-env-list h4 { margin: 0 -10px; padding: 9px 12px 6px; position: sticky; top: 0; z-index: 1; background: #f7f7f5f2; color: var(--muted); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+.canvas-env-list > div { min-height: 51px; padding: 0 5px; display: grid; grid-template-columns: 18px minmax(0,1fr) minmax(55px,auto); align-items: center; gap: 8px; border-bottom: 1px solid var(--border); border-radius: 8px; cursor: copy; outline: none; }
+.canvas-env-list > div:hover,.canvas-env-list > div:focus-visible { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border); }
+.canvas-env-list > div:last-of-type { border-bottom: 0; }
+.canvas-env-list > div.overridden { opacity: .48; }
+.canvas-env-list svg { width: 15px; color: var(--muted); }
+.canvas-env-list span { min-width: 0; display: grid; gap: 3px; }
+.canvas-env-list b,.canvas-env-list code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-env-list b { font-size: 11px; }
+.canvas-env-list small { font-size: 8px; }
+.canvas-env-list code { max-width: 145px; padding: 4px 6px; border-radius: 7px; background: var(--surface-2); font-size: 9px; text-align: right; }
+.canvas-env-list > p { margin: 18px 4px; font-size: 11px; }
 .leave-actions { flex-wrap: wrap; }
 @media (max-width: 1100px) {
   .editor-project { min-width: 42px; width: 42px; padding: 0 5px; border-right: 0; }
@@ -864,5 +959,6 @@ function applyAICanvas(canvas:any){
   .workflow-history-list { max-height: 190px; overflow: auto; border-right: 0; border-bottom: 1px solid var(--border); padding: 0 0 12px; }
   .workflow-history-canvas { height: 330px; }
   .history-button { width: 38px; padding: 0; font-size: 0; }
+  .canvas-env-preview { width: min(310px,calc(100vw - 16px)); }
 }
 </style>

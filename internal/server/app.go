@@ -102,6 +102,7 @@ func (a *App) routes() {
 	api.DELETE("/projects/:id/members/:userId", a.deleteProjectMember)
 	api.POST("/projects/:id/transfer-owner", a.transferProjectOwner)
 	api.GET("/projects/:id/environment-variables", a.listProjectEnvironmentVariables)
+	api.GET("/projects/:id/environment-variables/available", a.listAvailableEnvironmentVariables)
 	api.POST("/projects/:id/environment-variables", a.saveProjectEnvironmentVariable)
 	api.PUT("/projects/:id/environment-variables/:variableId", a.saveProjectEnvironmentVariable)
 	api.DELETE("/projects/:id/environment-variables/:variableId", a.deleteProjectEnvironmentVariable)
