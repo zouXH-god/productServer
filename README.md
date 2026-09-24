@@ -45,7 +45,7 @@ start.bat
 Action 会把匹配的内容确定性打包为一个 ZIP。版本默认使用 Git tag，没有 tag 时使用完整 commit SHA，也可通过 `version` 覆盖。
 
 ```yaml
-- uses: https://gitea.s1f.ren/shiran/product-server-action@v1.2
+- uses: zouXH-god/product-server-action@v1.2
   with:
     url: ${{ secrets.ARTIFACT_SERVER_URL }}
     token: ${{ secrets.ARTIFACT_SERVER_TOKEN }}
@@ -55,7 +55,7 @@ Action 会把匹配的内容确定性打包为一个 ZIP。版本默认使用 Gi
     name: web-build
 ```
 
-Action 输出 `version`、`file`、`sha256` 和不包含 Token 的 `download-url`。Action 源码位于独立仓库 [shiran/product-server-action](https://gitea.s1f.ren/shiran/product-server-action)。
+Action 输出 `version`、`file`、`sha256` 和不包含 Token 的 `download-url`。Action 源码位于独立仓库 [shiran/product-server-action](https://github.com/zouXH-god/product-server-action)。
 
 ## 通用 CI 上传
 
