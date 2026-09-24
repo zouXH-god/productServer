@@ -36,6 +36,7 @@ import {
   Search,
   GripVertical,
   ChevronDown,
+  ArrowUpRight,
 } from "lucide-vue-next";
 import { api } from "../api";
 import Modal from "../components/Modal.vue";
@@ -44,6 +45,7 @@ import EmptyState from "../components/EmptyState.vue";
 import FileTree from "../components/FileTree.vue";
 import AIChatPanel from "../components/AIChatPanel.vue";
 import RunDetailDrawer from "../components/RunDetailDrawer.vue";
+import StatusBadge from "../components/StatusBadge.vue";
 import { toast } from "../toast";
 const route = useRoute(),
   pid = Number(route.params.id),
@@ -65,6 +67,9 @@ const route = useRoute(),
   historyOpen = ref(false),
   leaveOpen = ref(false),
   runOpen = ref(false),
+  runHistoryOpen = ref(false),
+  runHistoryLoading = ref(false),
+  runHistory = ref<any[]>([]),
   runDetailOpen = ref(false),
   runDetailID = ref<number>(),
   releaseID = ref(0),
@@ -148,6 +153,22 @@ const modules: any = {
   loop_end:{name:"循环结束",desc:"汇总每次循环的节点输出",icon:CircleStop,category:"流程控制",defaults:{}},
   server_list:{name:"服务器列表",desc:"选择多台服务器并批量执行范围内任务",icon:ServerCog,category:"流程控制",defaults:{connection_ids:[],mode:"parallel",concurrency:4,end_node_id:""}},
   server_list_end:{name:"服务器列表结束",desc:"汇总每台服务器的状态与节点输出",icon:CircleStop,category:"流程控制",defaults:{}},
+};
+const moduleOutputSchemas:any={
+  archive:[{name:"path",type:"string",desc:"生成的归档文件路径"}],
+  extract:[{name:"path",type:"string",desc:"解压后的输出目录"}],
+  sftp_upload:[{name:"destination",type:"string",desc:"远端上传目录"}],
+  sftp_extract:[{name:"destination",type:"string",desc:"远端解压目录"}],
+  checksum_verify:[{name:"verified",type:"boolean",desc:"摘要是否校验通过"}],
+  ssh_command:[{name:"stdout",type:"string",desc:"命令标准输出"},{name:"stderr",type:"string",desc:"命令错误输出"},{name:"exit_code",type:"number",desc:"命令退出码"}],
+  http_webhook:[{name:"status_code",type:"number",desc:"HTTP 响应状态码"},{name:"body",type:"string",desc:"HTTP 响应正文"}],
+  remote_file_exists:[{name:"matched",type:"boolean",desc:"判断结果"},{name:"exists",type:"boolean",desc:"远端文件是否存在"},{name:"path",type:"string",desc:"检查的远端路径"}],
+  value_match:[{name:"matched",type:"boolean",desc:"内容是否匹配"},{name:"actual",type:"string",desc:"实际参与匹配的内容"}],
+  string_split:[{name:"items",type:"string[]",desc:"分割后的字符串列表"},{name:"count",type:"number",desc:"列表元素数量"}],
+  foreach:[{name:"items",type:"array",desc:"循环任务及其输出"},{name:"count",type:"number",desc:"循环任务数量"}],
+  loop_end:[{name:"items",type:"array",desc:"按索引汇总的循环结果"}],
+  server_list:[{name:"servers",type:"array",desc:"脱敏服务器信息列表"},{name:"count",type:"number",desc:"服务器任务数量"}],
+  server_list_end:[{name:"items",type:"array",desc:"按服务器顺序汇总的任务结果"},{name:"count",type:"number",desc:"服务器结果数量"}],
 };
 for(const key of ["archive","extract","sftp_upload","sftp_extract","checksum_verify"])modules[key].category="文件操作";for(const key of ["ssh_command","http_webhook"])modules[key].category="信息交互";
 const moduleGroups=computed(()=>["文件操作","流程控制","判断","数据派生","信息交互"].map(category=>({category,items:Object.entries(modules).filter(([,m]:any)=>m.category===category)})));
@@ -449,6 +470,13 @@ async function run() {
   runDetailID.value = created.id;
   runDetailOpen.value = true;
 }
+async function openRunHistory(){
+  if(!editing.value)return;
+  runHistoryOpen.value=true;runHistoryLoading.value=true;
+  try{const runs=await api<any[]>(`/api/projects/${pid}/runs`);runHistory.value=runs.filter((item:any)=>item.workflow_id===editing.value)}
+  finally{runHistoryLoading.value=false}
+}
+function openHistoricalRun(item:any){runHistoryOpen.value=false;runDetailID.value=item.id;runDetailOpen.value=true}
 watch(persistedSignature,signature=>{if(savedSignature.value)saved.value=signature===savedSignature.value;else if(editing.value!==undefined)saved.value=false});
 function inputFocus() {
   return ["INPUT", "TEXTAREA", "SELECT"].includes(
@@ -507,6 +535,16 @@ onUnmounted(() => {document.removeEventListener("keydown", key, true);window.rem
 const moduleInfo = computed(() =>
   selected.value ? modules[selected.value.data.module] : null,
 );
+const upstreamOutputNodes=computed(()=>{
+  if(!selected.value)return [];
+  const seen=new Set<string>();
+  return edges.value.filter((edge:any)=>edge.target===selected.value.id).map((edge:any)=>nodes.value.find((node:any)=>node.id===edge.source)).filter((node:any)=>{
+    if(!node||seen.has(node.id)||!moduleOutputSchemas[node.data.module]?.length)return false;
+    seen.add(node.id);return true;
+  }).map((node:any)=>({...node,outputs:moduleOutputSchemas[node.data.module]}));
+});
+function outputTemplate(nodeID:string,field:string){return `{{steps.${nodeID}.outputs.${field}}}`}
+async function copyOutputTemplate(nodeID:string,field:string){await copyTemplateVariable(`steps.${nodeID}.outputs.${field}`)}
 function scopeFor(nodeID:string,module:string){
   for(const start of nodes.value.filter((n:any)=>n.data.module===module)){
     const end=start.data.config.end_node_id, seen=new Set<string>(), queue=edges.value.filter((e:any)=>e.source===start.id).map((e:any)=>e.target);
@@ -591,6 +629,8 @@ function applyAICanvas(canvas:any){
       </div>
 	  <button v-if="editing&&canDevelop" class="btn secondary" @click="runOpen = true">
         <Play />运行</button
+	  ><button v-if="editing" class="btn secondary run-history-button" @click="openRunHistory">
+        <HistoryIcon />运行历史</button
 	  ><button v-if="canDevelop" class="btn" @click="save"><Save />保存</button>
     </header>
     <p v-if="error" class="editor-error">{{ error }}</p>
@@ -653,7 +693,7 @@ function applyAICanvas(canvas:any){
       </template>
     </section>
   </Teleport>
-  <Drawer v-model="historyOpen" wide title="工作流保存历史"><div class="workflow-history-layout"><aside class="workflow-history-list"><button v-for="item in workflowHistory" :key="item.id" :class="{active:historyPreview?.id===item.id}" @click="viewWorkflowRevision(item)"><span><b>{{new Date(item.created_at).toLocaleString()}}</b><small>{{item.created_by||'未知用户'}} · {{item.node_count}} 个节点 · {{item.edge_count}} 条连接</small></span><em>#{{item.id}}</em></button><EmptyState v-if="!workflowHistory.length" title="暂无保存历史"/></aside><section v-if="historyPreview" class="workflow-history-preview"><header><div><h3>{{historyPreview.name}}</h3><p>{{new Date(historyPreview.created_at).toLocaleString()}} · {{historyPreview.created_by||'未知用户'}}</p></div><button v-if="canDevelop" class="btn" @click="applyWorkflowRevision">应用到当前画布</button></header><div class="history-meta"><span>{{historyPreview.enabled?'已启用':'已停用'}}</span><span>{{historyPreview.trigger_type==='branch_glob'?`分支 ${historyPreview.trigger_glob}`:historyPreview.trigger_type==='tag_glob'?`Tag ${historyPreview.trigger_glob}`:historyPreview.trigger_type}}</span></div><div class="workflow-history-canvas"><VueFlow :nodes="historyPreviewNodes" :edges="historyPreviewEdges" fit-view-on-init :nodes-draggable="false" :nodes-connectable="false" :elements-selectable="false"><template #node-default="previewNode"><div class="history-preview-node"><component :is="modules[historyPreview.definition.nodes.find((item:any)=>item.id===previewNode.id)?.type]?.icon"/><span><b>{{previewNode.data.label}}</b><small>{{previewNode.id}}</small></span></div></template></VueFlow></div><details class="code-disclosure"><summary>查看历史 JSON</summary><pre>{{JSON.stringify(historyPreview.definition,null,2)}}</pre></details></section></div></Drawer>
+  <Drawer v-model="historyOpen" wide title="工作流保存历史"><div class="workflow-history-layout"><aside class="workflow-history-list"><button v-for="item in workflowHistory" :key="item.id" :class="{active:historyPreview?.id===item.id}" @click="viewWorkflowRevision(item)"><span><b>{{new Date(item.created_at).toLocaleString()}}</b><small>{{item.created_by||'未知用户'}} · {{item.node_count}} 个节点 · {{item.edge_count}} 条连接</small></span><em>#{{item.id}}</em></button><EmptyState v-if="!workflowHistory.length" title="暂无保存历史"/></aside><section v-if="historyPreview" class="workflow-history-preview"><header><div><h3>{{historyPreview.name}}</h3><p>{{new Date(historyPreview.created_at).toLocaleString()}} · {{historyPreview.created_by||'未知用户'}}</p></div><button v-if="canDevelop" class="btn" @click="applyWorkflowRevision">应用到当前画布</button></header><div class="history-meta"><span>{{historyPreview.enabled?'已启用':'已停用'}}</span><span>{{historyPreview.trigger_type==='branch_glob'?`分支 ${historyPreview.trigger_glob}`:historyPreview.trigger_type==='tag_glob'?`Tag ${historyPreview.trigger_glob}`:historyPreview.trigger_type}}</span></div><div class="workflow-history-canvas"><VueFlow :id="`workflow-history-preview-${historyPreview.id}`" :key="historyPreview.id" :nodes="historyPreviewNodes" :edges="historyPreviewEdges" fit-view-on-init :nodes-draggable="false" :nodes-connectable="false" :elements-selectable="false"><template #node-default="previewNode"><div class="history-preview-node"><component :is="modules[historyPreview.definition.nodes.find((item:any)=>item.id===previewNode.id)?.type]?.icon"/><span><b>{{previewNode.data.label}}</b><small>{{previewNode.id}}</small></span></div></template></VueFlow></div><details class="code-disclosure"><summary>查看历史 JSON</summary><pre>{{JSON.stringify(historyPreview.definition,null,2)}}</pre></details></section></div></Drawer>
   <Drawer v-model="previewOpen" title="版本文件预览">
     <div class="release-preview-summary">
       <b>{{
@@ -673,6 +713,15 @@ function applyAICanvas(canvas:any){
     ><p class="muted">{{ moduleInfo?.desc }}</p>
       <label>节点名称<input v-model.trim="selected.data.name" maxlength="80" :placeholder="moduleInfo?.name || '输入便于识别的名称'" /></label>
       <label>节点 ID<input v-model="selected.id" /></label>
+      <section v-if="upstreamOutputNodes.length" class="upstream-outputs">
+        <header><Variable/><span><b>上游节点返回值</b><small>点击调用方式即可复制</small></span></header>
+        <article v-for="node in upstreamOutputNodes" :key="node.id">
+          <div class="upstream-node-title"><component :is="modules[node.data.module]?.icon"/><span><b>{{node.data.name || modules[node.data.module]?.name}}</b><small>{{node.id}}</small></span></div>
+          <button v-for="field in node.outputs" :key="field.name" type="button" title="复制模板调用方式" @click="copyOutputTemplate(node.id,field.name)">
+            <span><b>{{field.name}}</b><small>{{field.desc}}</small></span><em>{{field.type}}</em><code>{{outputTemplate(node.id,field.name)}}</code>
+          </button>
+        </article>
+      </section>
       <div v-if="supportsPattern" class="pattern-picker">
         <label>
           预览版本
@@ -887,6 +936,16 @@ function applyAICanvas(canvas:any){
         <Play />开始运行
       </button>
     </div></Modal>
+  <Modal v-model="runHistoryOpen" title="运行历史" :description="`${project?.name||''} · ${name}`">
+    <div v-if="runHistoryLoading" class="modal-run-loading"><span class="skeleton"></span><span class="skeleton"></span><span class="skeleton"></span></div>
+    <div v-else class="modal-run-list">
+      <button v-for="item in runHistory" :key="item.id" class="run-history-row" @click="openHistoricalRun(item)">
+        <span><b>运行 #{{item.id}}</b><small>{{new Date(item.created_at).toLocaleString()}}</small></span>
+        <StatusBadge :status="item.status"/><ArrowUpRight/>
+      </button>
+      <EmptyState v-if="!runHistory.length" title="暂无运行记录" text="这个工作流还没有运行过。"/>
+    </div>
+  </Modal>
   <RunDetailDrawer v-model="runDetailOpen" :project-id="pid" :run-id="runDetailID" />
 </template>
 <style scoped>
@@ -905,6 +964,9 @@ function applyAICanvas(canvas:any){
 .trigger-editor-button small { font-size: 8px; }
 .trigger-editor-button b { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
 .history-button { white-space: nowrap; }
+.run-history-button { white-space: nowrap; }
+.modal-run-loading { display: grid; gap: 8px; }
+.modal-run-loading .skeleton { display: block; height: 58px; border-radius: 12px; }
 .workflow-history-layout { display: grid; grid-template-columns: 280px minmax(0,1fr); gap: 18px; min-height: 620px; }
 .workflow-history-list { display: grid; align-content: start; gap: 7px; padding-right: 14px; border-right: 1px solid var(--border); }
 .workflow-history-list > button { width: 100%; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: #fff; display: flex; gap: 8px; text-align: left; cursor: pointer; }
@@ -948,6 +1010,20 @@ function applyAICanvas(canvas:any){
 .canvas-env-list small { font-size: 8px; }
 .canvas-env-list code { max-width: 145px; padding: 4px 6px; border-radius: 7px; background: var(--surface-2); font-size: 9px; text-align: right; }
 .canvas-env-list > p { margin: 18px 4px; font-size: 11px; }
+.upstream-outputs { margin: 14px 0; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-2); }
+.upstream-outputs > header { padding: 11px 12px; display: flex; align-items: center; gap: 9px; border-bottom: 1px solid var(--border); background: #fff; }
+.upstream-outputs > header svg { width: 17px; color: var(--muted); }
+.upstream-outputs > header span,.upstream-node-title span,.upstream-outputs article button > span { min-width: 0; display: grid; gap: 2px; }
+.upstream-outputs > header b,.upstream-node-title b,.upstream-outputs article button b { font-size: 11px; }
+.upstream-outputs small { color: var(--muted); font-size: 9px; }
+.upstream-outputs article { padding: 9px; border-bottom: 1px solid var(--border); }
+.upstream-outputs article:last-child { border-bottom: 0; }
+.upstream-node-title { padding: 2px 3px 8px; display: flex; align-items: center; gap: 8px; }
+.upstream-node-title > svg { width: 16px; }
+.upstream-outputs article button { width: 100%; min-height: 52px; margin-top: 5px; padding: 7px 9px; display: grid; grid-template-columns: minmax(90px,.7fr) auto minmax(145px,1.3fr); align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 9px; background: #fff; color: inherit; text-align: left; cursor: copy; }
+.upstream-outputs article button:hover,.upstream-outputs article button:focus-visible { border-color: #999; box-shadow: 0 3px 12px #0000000b; }
+.upstream-outputs article button em { padding: 3px 6px; border-radius: 6px; background: var(--surface-2); color: var(--muted); font-size: 9px; font-style: normal; }
+.upstream-outputs article button code { overflow: hidden; color: #333; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .leave-actions { flex-wrap: wrap; }
 @media (max-width: 1100px) {
   .editor-project { min-width: 42px; width: 42px; padding: 0 5px; border-right: 0; }
