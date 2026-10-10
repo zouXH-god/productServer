@@ -52,7 +52,21 @@ function formatBytes(value:number){if(!value)return '0 B';const units=['B','KB',
 function openCapacity(){const bytes=Number(project.value?.max_artifact_bytes||0);capacityUnit.value=bytes>=1024**4?1024**4:bytes>=1024**3?1024**3:1024**2;capacityValue.value=bytes?Number((bytes/capacityUnit.value).toFixed(2)):null;capacityOpen.value=true}
 async function saveCapacity(){capacitySaving.value=true;try{await api(`/api/projects/${id}`,{method:'PUT',body:JSON.stringify({max_artifact_bytes:capacityValue.value?Math.round(capacityValue.value*capacityUnit.value):0})});capacityOpen.value=false;await load()}finally{capacitySaving.value=false}}
 async function load() {
-  project.value=await api<any>(`/api/projects/${id}`);[workflows.value,runs.value,members.value,targetProjects.value]=await Promise.all([api<any[]>(`/api/projects/${id}/workflows`),api<any[]>(`/api/projects/${id}/runs`),api<any[]>(`/api/projects/${id}/members`),api<any[]>(`/api/projects`)]);if(project.value.type==='artifact'){releases.value=await api<any[]>(`/api/projects/${id}/releases`);token.value=await api<any>(`/api/projects/${id}/token`).catch(()=>null)}else{releases.value=[];token.value=null}
+  project.value = await api<any>(`/api/projects/${id}`);
+  [workflows.value, runs.value, members.value, targetProjects.value] = await Promise.all([
+    api<any[]>(`/api/projects/${id}/workflows`),
+    api<any[]>(`/api/projects/${id}/runs`),
+    api<any[]>(`/api/projects/${id}/members`),
+    api<any[]>(`/api/projects`),
+  ]);
+  if (project.value.type === "artifact") {
+    const response = await api<any[]>(`/api/projects/${id}/releases`);
+    releases.value = Array.isArray(response) ? response : [];
+    token.value = await api<any>(`/api/projects/${id}/token`).catch(() => null);
+  } else {
+    releases.value = [];
+    token.value = null;
+  }
 }
 const canAdmin=computed(()=>['owner','admin'].includes(project.value?.role)),canDevelop=computed(()=>['owner','admin','developer'].includes(project.value?.role));
 function workflowTriggerLabel(flow:any){if(flow.trigger_type==='tag_glob')return `Tag ${flow.trigger_glob||'v*'}`;if(flow.trigger_type==='branch_glob')return `分支 ${flow.trigger_glob||'main'}`;return ({any:'任意版本',tag:'仅 Tag',commit:'所有分支 Commit'} as any)[flow.trigger_type]||flow.trigger_type}

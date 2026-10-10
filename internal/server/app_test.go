@@ -84,6 +84,16 @@ func loginAs(t *testing.T, a *App, username, password string) string {
 	return out.Token
 }
 
+func TestEmptyReleaseListIsArray(t *testing.T) {
+	a, _ := testApp(t)
+	jwt := loginToken(t, a)
+	projectID, _ := createProjectAndToken(t, a, jwt)
+	w := request(t, a, "GET", "/api/projects/"+itoa(projectID)+"/releases", nil, map[string]string{"Authorization": "Bearer " + jwt})
+	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != "[]" {
+		t.Fatalf("empty release list must be an array: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestRegistrationJWTRevocationAndProjectMembership(t *testing.T) {
 	a, _ := testApp(t)
 	w := request(t, a, "POST", "/api/auth/register", bytes.NewBufferString(`{"username":"developer","email":"dev@example.com","password":"password123"}`), map[string]string{"Content-Type": "application/json"})

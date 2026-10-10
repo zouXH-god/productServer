@@ -609,7 +609,7 @@ func (a *App) listReleases(c *gin.Context) {
 		fail(c, 400, "invalid_project_type", "scheduled projects do not have releases")
 		return
 	}
-	var items []Release
+	items := make([]Release, 0)
 	a.db.Model(&Release{}).
 		Select("releases.*, (SELECT COUNT(*) FROM artifact_access_logs WHERE artifact_access_logs.release_id = releases.id) AS access_count").
 		Where("releases.project_id = ?", id).
