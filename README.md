@@ -74,7 +74,7 @@ chmod +x productserver
 如果希望使用容器运行，建议从不需要额外数据库的 SQLite 版本开始：
 
 ```bash
-git clone https://gitea.s1f.ren/shiran/productServer.git
+git clone https://github.com/zouXH-god/productServer.git
 cd productServer
 docker compose -f deploy/docker/compose.sqlite.yml up -d --build
 ```
@@ -86,7 +86,7 @@ docker compose -f deploy/docker/compose.sqlite.yml up -d --build
 需要 Go 1.22+、Node.js 20+ 和 npm。
 
 ```bash
-git clone https://gitea.s1f.ren/shiran/productServer.git
+git clone https://github.com/zouXH-god/productServer.git
 cd productServer
 cp .env.example .env
 
@@ -128,11 +128,11 @@ Server 提供 API、管理界面、触发器和调度器；Worker 负责执行�
 
 ## 使用 Action 自动上传
 
-独立的 [Product Server Action](https://gitea.s1f.ren/shiran/product-server-action) 会将匹配内容确定性打包为 ZIP，自动读取 Tag、Commit SHA 和分支信息，然后上传到目标项目。
+独立的 [Product Server Action](https://github.com/zouXH-god/product-server-action) 会将匹配内容确定性打包为 ZIP，自动读取 Tag、Commit SHA 和分支信息，然后上传到目标项目。
 
 ```yaml
 - name: Upload artifact
-  uses: https://gitea.s1f.ren/shiran/product-server-action@v1.2
+  uses: https://github.com/zouXH-god/product-server-action@v1.2
   with:
     url: ${{ secrets.ARTIFACT_SERVER_URL }}
     token: ${{ secrets.ARTIFACT_SERVER_TOKEN }}
@@ -187,7 +187,7 @@ go build -trimpath -o productserver .
 
 - [完整使用文档](document.md)
 - [环境变量示例](.env.example)
-- [Product Server Action](https://gitea.s1f.ren/shiran/product-server-action)
+- [Product Server Action](https://github.com/zouXH-god/product-server-action)
 - [GitHub 镜像与 Releases](https://github.com/zouXH-god/productServer)
 
 欢迎提交 Issue、功能建议和 Pull Request。如果这个项目对你有帮助，也欢迎点一个 Star，让更多需要轻量 CI 产物管理和自动部署的人看到它。
