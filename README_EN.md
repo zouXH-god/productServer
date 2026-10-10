@@ -74,7 +74,7 @@ Open <http://localhost:8080> and sign in with `admin` / `admin123456`. Create an
 For a containerized setup, start with the SQLite edition, which requires no separate database:
 
 ```bash
-git clone https://gitea.s1f.ren/shiran/productServer.git
+git clone https://github.com/zouXH-god/productServer.git
 cd productServer
 docker compose -f deploy/docker/compose.sqlite.yml up -d --build
 ```
@@ -86,7 +86,7 @@ Compose editions with a bundled PostgreSQL database or an external database are 
 You need Go 1.22+, Node.js 20+, and npm.
 
 ```bash
-git clone https://gitea.s1f.ren/shiran/productServer.git
+git clone https://github.com/zouXH-god/productServer.git
 cd productServer
 cp .env.example .env
 
@@ -128,11 +128,11 @@ The Server provides the API, management UI, triggers, and scheduler. Workers exe
 
 ## Upload with the Action
 
-The standalone [Product Server Action](https://gitea.s1f.ren/shiran/product-server-action) creates a deterministic ZIP from matching paths, detects the tag, commit SHA, and branch, and uploads it to a target project.
+The standalone [Product Server Action](https://github.com/zouXH-god/product-server-action) creates a deterministic ZIP from matching paths, detects the tag, commit SHA, and branch, and uploads it to a target project.
 
 ```yaml
 - name: Upload artifact
-  uses: https://gitea.s1f.ren/shiran/product-server-action@v1.2
+  uses: https://github.com/zouXH-god/product-server-action@v1.2
   with:
     url: ${{ secrets.ARTIFACT_SERVER_URL }}
     token: ${{ secrets.ARTIFACT_SERVER_TOKEN }}
@@ -187,7 +187,7 @@ You can also use `build.ps1` or `build.sh`. The frontend assets are embedded in 
 
 - [Complete usage guide](document.md)
 - [Environment example](.env.example)
-- [Product Server Action](https://gitea.s1f.ren/shiran/product-server-action)
+- [Product Server Action](https://github.com/zouXH-god/product-server-action)
 - [GitHub mirror and releases](https://github.com/zouXH-god/productServer)
 
 Issues, feature requests, and pull requests are welcome. If Product Server is useful to you, consider starring the repository so more developers looking for lightweight CI artifact management and deployment automation can find it.
